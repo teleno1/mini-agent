@@ -4,15 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import shutil
 import subprocess
-from collections.abc import Mapping
+from collections.abc import Iterator
 from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any, ClassVar
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 from mini_agent.tools.contracts import (
     RiskAssessment,
@@ -21,8 +22,12 @@ from mini_agent.tools.contracts import (
     ToolOutcome,
     ToolResult,
 )
-from mini_agent.tools.workspace import BinaryTargetError, Workspace, WorkspaceError, WorkspacePathError
-
+from mini_agent.tools.workspace import (
+    BinaryTargetError,
+    Workspace,
+    WorkspaceError,
+    WorkspacePathError,
+)
 
 MAX_LINES = 500
 MAX_BYTES = 64 * 1024
@@ -38,15 +43,29 @@ class ReadFileInput(BaseModel):
     start_line: int = Field(default=1, ge=1)
     end_line: int | None = Field(default=None, ge=1)
     max_lines: int = Field(default=MAX_LINES, ge=1, le=MAX_LINES)
+    max_bytes: int = Field(
+        default=MAX_BYTES,
+        ge=1,
+        le=MAX_BYTES,
+        validation_alias=AliasChoices("max_bytes", "max_output_bytes"),
+    )
     line_start: int | None = Field(default=None, ge=1)
     line_end: int | None = Field(default=None, ge=1)
     start_byte: int | None = Field(default=None, ge=0)
 
     @model_validator(mode="after")
     def normalize_range(self) -> ReadFileInput:
-        if self.line_start is not None and self.start_line != 1 and self.line_start != self.start_line:
+        if (
+            self.line_start is not None
+            and self.start_line != 1
+            and self.line_start != self.start_line
+        ):
             raise ValueError("start_line and line_start disagree")
-        if self.line_end is not None and self.end_line is not None and self.line_end != self.end_line:
+        if (
+            self.line_end is not None
+            and self.end_line is not None
+            and self.line_end != self.end_line
+        ):
             raise ValueError("end_line and line_end disagree")
         start = self.line_start or self.start_line
         end = self.line_end if self.line_end is not None else self.end_line
@@ -62,12 +81,28 @@ class SearchFilesInput(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
-    query: str = Field(min_length=1, validation_alias="query")
-    directory: str = "."
-    glob: str | None = None
+    query: str = Field(
+        min_length=1,
+        validation_alias=AliasChoices("query", "pattern"),
+    )
+    directory: str = Field(default=".", validation_alias=AliasChoices("directory", "path"))
+    glob: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("glob", "file_glob"),
+    )
     regex: bool = False
-    max_matches: int = Field(default=MAX_SEARCH_MATCHES, ge=1, le=MAX_SEARCH_MATCHES)
-    max_bytes: int = Field(default=MAX_BYTES, ge=1, le=MAX_BYTES)
+    max_matches: int = Field(
+        default=MAX_SEARCH_MATCHES,
+        ge=1,
+        le=MAX_SEARCH_MATCHES,
+        validation_alias=AliasChoices("max_matches", "max_results"),
+    )
+    max_bytes: int = Field(
+        default=MAX_BYTES,
+        ge=1,
+        le=MAX_BYTES,
+        validation_alias=AliasChoices("max_bytes", "max_output_bytes"),
+    )
     case_sensitive: bool = True
 
     @model_validator(mode="after")
@@ -78,7 +113,9 @@ class SearchFilesInput(BaseModel):
             raise ValueError("glob cannot be blank")
         if self.glob is not None:
             portable = self.glob.replace("\\", "/")
-            if portable.startswith(("/", "//")) or any(part == ".." for part in portable.split("/")):
+            if portable.startswith(("/", "//")) or any(
+                part == ".." for part in portable.split("/")
+            ):
                 raise ValueError("glob must remain relative to the Workspace")
         if self.regex:
             try:
@@ -134,6 +171,8 @@ class ReadFileTool(_WorkspaceTool):
             return self._failure(call_id, "read", "Workspace file could not be read")
         except UnicodeDecodeError:
             return self._failure(call_id, "binary", "binary Workspace content is not readable")
+        except ValueError:
+            return self._failure(call_id, "range", "read range continuation is invalid")
         except OSError:
             return self._failure(call_id, "read", "Workspace file could not be read")
 
@@ -172,9 +211,13 @@ class SearchFilesTool(_WorkspaceTool):
             return self._failure(call_id, exc.code, str(exc))
         try:
             if shutil.which("rg"):
-                matches = await asyncio.to_thread(self._search_with_rg, workspace, target.path, request)
+                matches = await asyncio.to_thread(
+                    self._search_with_rg, workspace, target.path, request
+                )
             else:
-                matches = await asyncio.to_thread(self._search_with_python, workspace, target.path, request)
+                matches = await asyncio.to_thread(
+                    self._search_with_python, workspace, target.path, request
+                )
             return ToolResult(
                 tool_call_id=str(call_id),
                 tool_name=self.name,
@@ -205,7 +248,9 @@ class SearchFilesTool(_WorkspaceTool):
             message=message,
         )
 
-    def _search_with_rg(self, workspace: Workspace, root: Path, request: SearchFilesInput) -> _SearchResult:
+    def _search_with_rg(
+        self, workspace: Workspace, root: Path, request: SearchFilesInput
+    ) -> _SearchResult:
         executable = shutil.which("rg")
         if executable is None:
             return self._search_with_python(workspace, root, request)
@@ -241,7 +286,9 @@ class SearchFilesTool(_WorkspaceTool):
             raise OSError("rg search failed")
         return _parse_rg_output(completed.stdout, request)
 
-    def _search_with_python(self, workspace: Workspace, root: Path, request: SearchFilesInput) -> _SearchResult:
+    def _search_with_python(
+        self, workspace: Workspace, root: Path, request: SearchFilesInput
+    ) -> _SearchResult:
         flags = 0 if request.case_sensitive else re.IGNORECASE
         matcher = re.compile(request.query, flags) if request.regex else None
         matches: list[dict[str, Any]] = []
@@ -261,7 +308,11 @@ class SearchFilesTool(_WorkspaceTool):
             except (WorkspaceError, UnicodeDecodeError, OSError):
                 continue
             for line_number, line in enumerate(text.splitlines(), start=1):
-                found = matcher.search(line) if matcher is not None else _literal_search(line, request.query, request.case_sensitive)
+                found = (
+                    matcher.search(line)
+                    if matcher is not None
+                    else _literal_search(line, request.query, request.case_sensitive)
+                )
                 if found is None:
                     continue
                 item = {
@@ -271,18 +322,28 @@ class SearchFilesTool(_WorkspaceTool):
                     "text": line,
                 }
                 encoded_size = len(json.dumps(item, ensure_ascii=False).encode("utf-8")) + 1
-                if len(matches) >= request.max_matches or used_bytes + encoded_size > request.max_bytes:
+                if (
+                    len(matches) >= request.max_matches
+                    or used_bytes + encoded_size > request.max_bytes
+                ):
                     truncated = True
                     break
                 matches.append(item)
                 used_bytes += encoded_size
             if truncated:
                 break
-        return _SearchResult(tuple(matches), truncated, _next_search_continuation(matches) if truncated else None)
+        return _SearchResult(
+            tuple(matches), truncated, _next_search_continuation(matches) if truncated else None
+        )
 
 
 class _SearchResult:
-    def __init__(self, items: tuple[dict[str, Any], ...], truncated: bool, continuation: dict[str, Any] | None) -> None:
+    def __init__(
+        self,
+        items: tuple[dict[str, Any], ...],
+        truncated: bool,
+        continuation: dict[str, Any] | None,
+    ) -> None:
         self.items = items
         self.truncated = truncated
         self.continuation = continuation
@@ -295,10 +356,7 @@ def _read_range(relative: str, raw: bytes, request: ReadFileInput) -> ToolResult
     lines = text.splitlines(keepends=True)
     start = request.start_line
     end = request.end_line or len(lines)
-    if start > len(lines) and lines:
-        selected: list[str] = []
-    else:
-        selected = []
+    selected: list[str] = []
     next_line: int | None = None
     next_byte: int | None = None
     line_byte_offset = 0
@@ -307,19 +365,30 @@ def _read_range(relative: str, raw: bytes, request: ReadFileInput) -> ToolResult
         if line_number < start:
             line_byte_offset += len(encoded_line)
             continue
-        if line_number > end or len(selected) >= request.max_lines:
+        if line_number > end:
+            break
+        if len(selected) >= request.max_lines:
             if line_number <= end:
                 next_line, next_byte = line_number, line_byte_offset
             break
+        line_start = line_byte_offset
+        slice_start = 0
+        if line_number == start and request.start_byte is not None:
+            if request.start_byte < line_start or request.start_byte > line_start + len(
+                encoded_line
+            ):
+                raise ValueError("start_byte does not belong to start_line")
+            slice_start = request.start_byte - line_start
+        candidate = encoded_line[slice_start:]
         current_bytes = sum(len(item.encode("utf-8")) for item in selected)
-        remaining = MAX_BYTES - current_bytes
-        if len(encoded_line) <= remaining:
-            selected.append(line)
+        remaining = request.max_bytes - current_bytes
+        if len(candidate) <= remaining:
+            selected.append(candidate.decode("utf-8"))
         else:
-            piece = _decode_prefix(encoded_line, remaining)
+            piece = _decode_prefix(candidate, remaining)
             selected.append(piece)
             next_line = line_number
-            next_byte = line_byte_offset + len(piece.encode("utf-8"))
+            next_byte = line_start + slice_start + len(piece.encode("utf-8"))
             break
         line_byte_offset += len(encoded_line)
     content = "".join(selected)
@@ -357,11 +426,19 @@ def _decode_prefix(raw: bytes, limit: int) -> str:
 
 
 def _as_read_input(arguments: BaseModel) -> ReadFileInput:
-    return arguments if isinstance(arguments, ReadFileInput) else ReadFileInput.model_validate(arguments)
+    return (
+        arguments
+        if isinstance(arguments, ReadFileInput)
+        else ReadFileInput.model_validate(arguments)
+    )
 
 
 def _as_search_input(arguments: BaseModel) -> SearchFilesInput:
-    return arguments if isinstance(arguments, SearchFilesInput) else SearchFilesInput.model_validate(arguments)
+    return (
+        arguments
+        if isinstance(arguments, SearchFilesInput)
+        else SearchFilesInput.model_validate(arguments)
+    )
 
 
 def _literal_search(line: str, query: str, case_sensitive: bool) -> re.Match[str] | None:
@@ -371,7 +448,8 @@ def _literal_search(line: str, query: str, case_sensitive: bool) -> re.Match[str
         index = line.lower().find(query.lower())
     if index < 0:
         return None
-    return re.match(re.escape(line[index:]), line[index:])
+    flags = 0 if case_sensitive else re.IGNORECASE
+    return re.search(re.escape(query), line, flags)
 
 
 def _parse_rg_output(raw: bytes, request: SearchFilesInput) -> _SearchResult:
@@ -392,35 +470,48 @@ def _parse_rg_output(raw: bytes, request: SearchFilesInput) -> _SearchResult:
             column = int(column_text)
         except ValueError:
             continue
-        item = {"path": path.replace("\\", "/"), "line": line_number, "column": column, "text": content}
+        item = {
+            "path": path.replace("\\", "/"),
+            "line": line_number,
+            "column": column,
+            "text": content,
+        }
         size = len(json.dumps(item, ensure_ascii=False).encode("utf-8")) + 1
         if len(items) >= request.max_matches or used + size > request.max_bytes:
             truncated = True
             break
         items.append(item)
         used += size
-    return _SearchResult(tuple(items), truncated, _next_search_continuation(items) if truncated else None)
+    return _SearchResult(
+        tuple(items), truncated, _next_search_continuation(items) if truncated else None
+    )
 
 
-def _next_search_continuation(items: list[dict[str, Any]] | tuple[dict[str, Any], ...]) -> dict[str, Any] | None:
+def _next_search_continuation(
+    items: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+) -> dict[str, Any] | None:
     if not items:
         return None
     last = items[-1]
     return {"path": last["path"], "start_line": last["line"]}
 
 
-def _iter_files(workspace: Workspace, root: Path):
-    for directory, directories, filenames in __import__("os").walk(root, followlinks=False):
+def _iter_files(workspace: Workspace, root: Path) -> Iterator[Path]:
+    for directory, directories, filenames in os.walk(root, followlinks=False):
         directory_path = Path(directory)
         directories[:] = [
             name
             for name in directories
             if name not in {".git", ".mini-agent"}
-            and not workspace.is_ignored((directory_path / name).relative_to(workspace.root).as_posix())
+            and not workspace.is_ignored(
+                (directory_path / name).relative_to(workspace.root).as_posix()
+            )
         ]
         for filename in filenames:
             yield directory_path / filename
 
 
 def _glob_match(value: str, pattern: str) -> bool:
-    return fnmatchcase(value, pattern) or (pattern.startswith("**/") and fnmatchcase(value, pattern[3:]))
+    return fnmatchcase(value, pattern) or (
+        pattern.startswith("**/") and fnmatchcase(value, pattern[3:])
+    )

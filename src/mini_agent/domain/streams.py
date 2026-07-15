@@ -49,7 +49,9 @@ class ToolCallArgumentDelta:
 
     tool_call_id: str
     arguments: str
-    kind: Literal[StreamEventKind.TOOL_CALL_ARGUMENT_DELTA] = StreamEventKind.TOOL_CALL_ARGUMENT_DELTA
+    kind: Literal[StreamEventKind.TOOL_CALL_ARGUMENT_DELTA] = (
+        StreamEventKind.TOOL_CALL_ARGUMENT_DELTA
+    )
 
     @property
     def id(self) -> str:

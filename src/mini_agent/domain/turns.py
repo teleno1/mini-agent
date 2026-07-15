@@ -11,10 +11,10 @@ from mini_agent.domain.streams import (
     ResponseFailed,
     ResponseStarted,
     StreamEvent,
+    TextDelta,
     ToolCallArgumentDelta,
     ToolCallCompleted,
     ToolCallStarted,
-    TextDelta,
     UsageReported,
 )
 
@@ -109,8 +109,10 @@ def close_agent_response(events: tuple[StreamEvent, ...]) -> AgentResponse:
                 raise InvalidStream("text-delta cannot arrive after usage-reported")
             text_parts.append(event.text)
         elif isinstance(event, ToolCallStarted):
-            if usage_reported or event.tool_call_id in active or any(
-                call.tool_call_id == event.tool_call_id for call in calls
+            if (
+                usage_reported
+                or event.tool_call_id in active
+                or any(call.tool_call_id == event.tool_call_id for call in calls)
             ):
                 raise InvalidStream("Tool Call started out of order or twice")
             active[event.tool_call_id] = (event.name, [])

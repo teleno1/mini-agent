@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import os
-import re
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
@@ -97,6 +95,17 @@ _BINARY_SUFFIXES = {
     ".zip",
 }
 _ENV_TEMPLATE_NAMES = {".env.example", ".env.sample", ".env.template", ".env.dist"}
+_SENSITIVE_DIRECTORIES = {".aws", ".azure", ".docker", ".gcloud", ".kube", ".ssh"}
+_SENSITIVE_FILENAMES = {
+    "application_default_credentials.json",
+    "cookies.sqlite",
+    "id_dsa",
+    "id_ecdsa",
+    "id_ed25519",
+    "id_rsa",
+    "secret.json",
+    "secrets.json",
+}
 
 
 class Workspace:
@@ -169,7 +178,9 @@ class Workspace:
                 return True
             if anchored and _glob_match(path, rule):
                 return True
-            if not anchored and (_glob_match(path, rule) or any(_glob_match(part, rule) for part in path.split("/"))):
+            if not anchored and (
+                _glob_match(path, rule) or any(_glob_match(part, rule) for part in path.split("/"))
+            ):
                 return True
         return False
 
@@ -181,7 +192,11 @@ class Workspace:
         portable = target.replace("\\", "/")
         windows = PureWindowsPath(target)
         posix = PurePosixPath(portable)
-        if target.startswith("\\\\") or windows.unc or portable.startswith("//"):
+        if (
+            target.startswith("\\\\")
+            or windows.anchor.startswith("\\\\")
+            or portable.startswith("//")
+        ):
             raise WorkspacePathError("unc")
         if windows.drive:
             raise WorkspacePathError("drive")
@@ -203,14 +218,20 @@ class Workspace:
         parts = [part.lower() for part in relative.replace("\\", "/").split("/")]
         if ".mini-agent" in parts:
             return True
-        if any(part in {".aws", ".azure", ".gcloud", ".kube", ".ssh"} for part in parts[:-1]):
-            name = parts[-1] if parts else ""
-            if name not in _ENV_TEMPLATE_NAMES:
-                return True
-        name = (resolved.name or relative.rsplit("/", 1)[-1]).lower()
-        if name in {"credentials", "credentials.json", "secrets.json", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"}:
+        if any(part in _SENSITIVE_DIRECTORIES for part in parts):
             return True
-        if name.startswith(".env") and name not in _ENV_TEMPLATE_NAMES:
+        name = (resolved.name or relative.rsplit("/", 1)[-1]).lower()
+        if name in {
+            "credentials",
+            "credentials.json",
+            "secrets.json",
+        }:
+            return True
+        if name in _SENSITIVE_FILENAMES or name.startswith(
+            ("credentials.", "secret.", "secrets.", "token.")
+        ):
+            return True
+        if (name.startswith(".env") or name.endswith(".env")) and name not in _ENV_TEMPLATE_NAMES:
             return True
         if name.endswith((".pem", ".key", ".p12", ".pfx", ".secret", ".secrets")):
             return True
@@ -239,4 +260,6 @@ def _glob_match(value: str, pattern: str) -> bool:
     # never interpolated into a command.
     from fnmatch import fnmatchcase
 
-    return fnmatchcase(value, pattern) or (pattern.startswith("**/") and fnmatchcase(value, pattern[3:]))
+    return fnmatchcase(value, pattern) or (
+        pattern.startswith("**/") and fnmatchcase(value, pattern[3:])
+    )

@@ -118,10 +118,15 @@ class ToolResult(BaseModel):
             return ""
         return json.dumps(self.data, ensure_ascii=False, sort_keys=True)
 
+    def for_call(self, call: ToolCall) -> ToolResult:
+        """Bind a Tool implementation's bounded result to its immutable call."""
+
+        if call.name != self.tool_name:
+            raise ValueError("Tool Result name does not match Tool Call")
+        return self.model_copy(update={"tool_call_id": call.tool_call_id})
+
     @classmethod
-    def succeeded(
-        cls, call: ToolCall, data: Mapping[str, Any] | None = None
-    ) -> ToolResult:
+    def succeeded(cls, call: ToolCall, data: Mapping[str, Any] | None = None) -> ToolResult:
         return cls(
             tool_call_id=call.tool_call_id,
             tool_name=call.name,
@@ -240,6 +245,14 @@ class ToolRegistry:
             raise ToolValidationError(f"invalid arguments for Tool {call.name}", call=call) from exc
         risk = tool.assess(arguments)
         return ValidatedToolCall(call=call, arguments=arguments, risk=risk)
+
+    async def execute(self, workspace: Workspace, call: ToolCall) -> ToolResult:
+        """Validate and execute one call, preserving its correlation ID."""
+
+        validated = self.validate(call)
+        tool = self.require(call.name)
+        result = await tool.execute(workspace, validated.arguments)
+        return result.for_call(call)
 
 
 def invalid_result(call: ToolCall, *, code: str, message: str) -> ToolResult:
