@@ -12,4 +12,3 @@ build/
 dist/
 *.egg-info/
 .mini-agent/
-.manual-runs/
