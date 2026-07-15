@@ -20,7 +20,7 @@ from types import MappingProxyType
 from typing import Protocol, cast
 from urllib.parse import urlparse
 
-from mini_agent.domain.sessions import JSONValue
+from mini_agent.domain.sessions import JSONValue, SessionEventType
 
 
 class _SessionWriterLike(Protocol):
@@ -253,7 +253,7 @@ class EffectiveConfiguration:
         """Return only values that can legally be carried into a Session."""
 
         return {
-            key: getattr(self, key)
+            key: _json_value(getattr(self, key))
             for key in SESSION_OVERRIDE_FIELDS
             if self.provenance.get(key, None) is not None
             and self.provenance[key].source is ConfigurationSource.SESSION
@@ -311,16 +311,18 @@ class ConfigurationResolver:
         ):
             self._merge(values, provenance, source, source_values)
 
-        api_key = self.environment.get("MINI_AGENT_API_KEY") or None
-        if api_key is not None and not api_key.strip():
+        raw_api_key = self.environment.get("MINI_AGENT_API_KEY")
+        if raw_api_key is not None and not raw_api_key.strip():
             raise ConfigurationError("environment MINI_AGENT_API_KEY must not be blank")
+        api_key = raw_api_key or None
 
         base_before_session = _build_configuration(values, provenance, api_key)
         overrides = dict(session_overrides or {})
+        if overrides:
+            self._validate_session_override_keys(overrides)
         if session_reset:
             overrides = {}
         if overrides:
-            self._validate_session_override_keys(overrides)
             _check_permission_change(
                 base_before_session.permission_mode,
                 overrides.get("permission_mode"),
@@ -376,7 +378,7 @@ class ConfigurationResolver:
         values: dict[str, object] = {}
         for raw_key, raw_value in self.cli_values.items():
             key = _canonical_key(raw_key, ConfigurationSource.CLI, None)
-            if key in _SENSITIVE_KEYS or key in ACTIVE_SESSION_FORBIDDEN_FIELDS - {"base_url"}:
+            if key in _SENSITIVE_KEYS or key in {"workspace", "session_storage"}:
                 raise ForbiddenConfigurationKey(
                     f"CLI cannot set sensitive configuration {raw_key!r}"
                 )
@@ -443,8 +445,13 @@ class SessionConfigurationService:
             confirm_less_restrictive=confirm_less_restrictive,
         )
         with self.session_store.open_writer(session_id) as writer:
+            session_provenance: dict[str, JSONValue] = {
+                key: effective.provenance[key].as_dict()
+                for key in effective.provenance
+                if effective.provenance[key].source is ConfigurationSource.SESSION
+            }
             writer.append(
-                "configuration.changed",
+                SessionEventType.CONFIGURATION_CHANGED,
                 {
                     "overrides": {
                         key: _json_value(value)
@@ -452,6 +459,7 @@ class SessionConfigurationService:
                     },
                     "reset": reset,
                     "configuration_hash": effective.configuration_hash(),
+                    "provenance": session_provenance,
                 },
             )
         return effective
@@ -559,6 +567,10 @@ def _validate_field(key: str, value: object, source: ConfigurationSource) -> obj
             if parsed.scheme not in {"http", "https"} or not parsed.netloc:
                 raise ConfigurationError(
                     f"{source.value}: provider_base_url must be an HTTP(S) URL"
+                )
+            if parsed.username is not None or parsed.password is not None:
+                raise ConfigurationError(
+                    f"{source.value}: provider_base_url must not contain credentials"
                 )
         return value.strip()
     raise UnknownConfigurationKey(f"{source.value}: unknown configuration key {key!r}")

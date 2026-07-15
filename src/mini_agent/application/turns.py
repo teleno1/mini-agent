@@ -11,13 +11,14 @@ from mini_agent.application.ports import (
     EventObserver,
     IDGenerator,
     ModelProvider,
+    ResumedSession,
     SessionStore,
     SessionWriter,
 )
 from mini_agent.application.ports import (
     ContextBuilder as ContextBuilderPort,
 )
-from mini_agent.configuration import EffectiveConfiguration
+from mini_agent.configuration import ConfigurationResolver, EffectiveConfiguration
 from mini_agent.context import ContextFrame
 from mini_agent.domain.messages import AssistantMessage, Message, UserMessage
 from mini_agent.domain.sessions import SessionEvent, SessionEventType
@@ -51,6 +52,7 @@ class TextTurnApplication:
         session_store: SessionStore | None = None,
         context_builder: ContextBuilderPort | None = None,
         configuration: EffectiveConfiguration | None = None,
+        configuration_resolver: ConfigurationResolver | None = None,
         request_targets: tuple[str, ...] = (),
     ) -> None:
         self._provider = provider
@@ -59,6 +61,7 @@ class TextTurnApplication:
         self._session_store = session_store
         self._context_builder = context_builder
         self._configuration = configuration
+        self._configuration_resolver = configuration_resolver
         self._request_targets = request_targets
 
     async def run(
@@ -82,15 +85,25 @@ class TextTurnApplication:
         request_completed = False
         history: tuple[Message, ...] = ()
         frame: ContextFrame | None = None
+        resumed_session: ResumedSession | None = None
+        effective_configuration = self._configuration
 
         try:
             if self._session_store is not None:
                 if requested_session_id is not None:
-                    resumed = self._session_store.resume(session_id)
-                    history = resumed.messages
+                    resumed_session = self._session_store.resume(session_id)
+                    history = resumed_session.messages
                     writer = self._session_store.open_writer(session_id)
                 else:
                     writer = self._session_store.create(session_id, created_at=started_at)
+                if self._configuration_resolver is not None:
+                    effective_configuration = self._configuration_resolver.resolve(
+                        session_overrides=(
+                            resumed_session.configuration_overrides
+                            if resumed_session is not None
+                            else None
+                        )
+                    )
                 turn_started = writer.append(
                     SessionEventType.TURN_STARTED,
                     {},
@@ -110,8 +123,31 @@ class TextTurnApplication:
                     request_id=request_id,
                     session_id=session_id,
                     history=history,
+                    configuration=effective_configuration,
+                    included_event_range=(1, len(writer.events)),
                 )
                 if frame is not None:
+                    previous_hashes = _previous_instruction_hashes(resumed_session)
+                    if (
+                        resumed_session is not None
+                        and previous_hashes != frame.manifest.instruction_hashes
+                    ):
+                        writer.append(
+                            SessionEventType.INSTRUCTION_CHANGED,
+                            {
+                                "previous_hashes": [
+                                    {"path": path, "sha256": sha256}
+                                    for path, sha256 in previous_hashes
+                                ],
+                                "current_hashes": [
+                                    {"path": path, "sha256": sha256}
+                                    for path, sha256 in frame.manifest.instruction_hashes
+                                ],
+                            },
+                            turn_id=turn_id,
+                            causation_id=user_event.event_id,
+                            timestamp=self._clock.now(),
+                        )
                     writer.append(
                         SessionEventType.CONTEXT_MANIFEST_RECORDED,
                         {
@@ -150,6 +186,7 @@ class TextTurnApplication:
                 request_id=self._id_generator.new_id("request"),
                 session_id=session_id,
                 history=history,
+                configuration=effective_configuration,
             )
 
         request_messages: tuple[Message, ...] | ContextFrame
@@ -231,6 +268,8 @@ class TextTurnApplication:
         request_id: str,
         session_id: str,
         history: tuple[Message, ...],
+        configuration: EffectiveConfiguration | None = None,
+        included_event_range: tuple[int, int] | None = None,
     ) -> ContextFrame | None:
         if self._context_builder is None:
             return None
@@ -240,6 +279,8 @@ class TextTurnApplication:
             session_id=session_id,
             targets=self._request_targets,
             history=history,
+            configuration=configuration,
+            included_event_range=included_event_range,
         )
 
     def _record_failed_turn(
@@ -291,3 +332,22 @@ def _failure_payload(exc: BaseException) -> dict[str, str]:
         "source": "application",
         "description": f"{type(exc).__name__}: {str(exc)[:200]}",
     }
+
+
+def _previous_instruction_hashes(
+    resumed_session: ResumedSession | None,
+) -> tuple[tuple[str, str], ...]:
+    if resumed_session is None or not resumed_session.context_manifests:
+        return ()
+    raw_hashes = resumed_session.context_manifests[-1].get("instruction_hashes", [])
+    if not isinstance(raw_hashes, list):
+        return ()
+    hashes: list[tuple[str, str]] = []
+    for item in raw_hashes:
+        if not isinstance(item, dict):
+            continue
+        path = item.get("path")
+        sha256 = item.get("sha256")
+        if isinstance(path, str) and isinstance(sha256, str):
+            hashes.append((path, sha256))
+    return tuple(hashes)

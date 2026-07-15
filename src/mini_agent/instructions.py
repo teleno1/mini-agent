@@ -259,7 +259,10 @@ def _find_conflicts(
                     key = " ".join(match.group(1).lower().split())
                     rules[key] = (match.group(2).strip(), document.relative_path)
                 if line.strip().lower().startswith("conflict:"):
-                    rules[f"explicit:{target}"] = (line.strip()[9:].strip(), document.relative_path)
+                    rules["__explicit_conflict__"] = (
+                        line.strip()[9:].strip(),
+                        document.relative_path,
+                    )
         effective_rules[target] = rules
 
     conflicts: list[str] = []

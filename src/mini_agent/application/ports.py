@@ -41,6 +41,10 @@ type EventObserver = Callable[[StreamEvent], Awaitable[None] | None]
 class SessionWriter(Protocol):
     """The durable-before-side-effect seam used by the Turn application."""
 
+    @property
+    def events(self) -> tuple[SessionEvent, ...]:
+        """Events already durable in this writer."""
+
     def append(
         self,
         event_type: str | SessionEventType,
@@ -71,6 +75,10 @@ class ResumedSession(Protocol):
     @property
     def configuration_overrides(self) -> Mapping[str, JSONValue]:
         """Allowlisted non-secret Session configuration state."""
+
+    @property
+    def context_manifests(self) -> tuple[dict[str, JSONValue], ...]:
+        """Non-secret provenance records from previous model requests."""
 
 
 class ContextBuilder(Protocol):

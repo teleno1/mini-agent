@@ -200,6 +200,10 @@ class ResumedSession:
     def configuration_overrides(self) -> Mapping[str, JSONValue]:
         return self.projection.configuration_overrides
 
+    @property
+    def context_manifests(self) -> tuple[dict[str, JSONValue], ...]:
+        return self.projection.context_manifests
+
 
 class _SessionLock:
     """Small cross-platform lock based on atomic exclusive file creation."""
