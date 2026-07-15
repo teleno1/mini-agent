@@ -4,11 +4,11 @@
 
 **Blocked by:** None - can start immediately.
 
-**Status:** ready-for-agent
+**Status:** completed
 
-- [ ] The project uses Python 3.12+, a source-layout `mini_agent` distribution, Hatchling, uv, and the agreed runtime dependencies without an Agent framework.
-- [ ] `mini-agent`, `python -m mini_agent`, `--help`, and `--version` work without an API Key or Git repository.
-- [ ] A scripted Fake Model Provider completes one asynchronous text-only Turn through provider-neutral messages and normalized Stream Events.
-- [ ] Domain rules do not import terminal, HTTP, filesystem, or concrete Provider code; the first real Application Ports are explicit and replaceable.
-- [ ] The CLI shows a minimal conversational exchange and never exposes diagnostic Phase or Actions fields.
-- [ ] Deterministic Clock and ID Generator substitutes make the smoke journey repeatable offline.
+- [x] The project uses Python 3.12+, a source-layout `mini_agent` distribution, Hatchling, uv, and the agreed runtime dependencies without an Agent framework.
+- [x] `mini-agent`, `python -m mini_agent`, `--help`, and `--version` work without an API Key or Git repository.
+- [x] A scripted Fake Model Provider completes one asynchronous text-only Turn through provider-neutral messages and normalized Stream Events.
+- [x] Domain rules do not import terminal, HTTP, filesystem, or concrete Provider code; the first real Application Ports are explicit and replaceable.
+- [x] The CLI shows a minimal conversational exchange and never exposes diagnostic Phase or Actions fields.
+- [x] Deterministic Clock and ID Generator substitutes make the smoke journey repeatable offline.
