@@ -121,6 +121,7 @@ class Failure:
     required_user_action: str
     cause: str | None = None
     code: str = "provider-error"
+    retry_after_seconds: float | None = None
 
     def __post_init__(self) -> None:
         if not all(
@@ -136,6 +137,8 @@ class Failure:
             raise ValueError("failure fields cannot be blank")
         if self.cause is not None and not self.cause.strip():
             raise ValueError("failure cause cannot be blank when provided")
+        if self.retry_after_seconds is not None and self.retry_after_seconds < 0:
+            raise ValueError("retry-after duration cannot be negative")
 
 
 type StreamEvent = (

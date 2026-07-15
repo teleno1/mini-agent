@@ -127,3 +127,11 @@ A structured replacement for older session events when the active model context 
 ## Plan
 
 The user-visible, mutable list of task steps and their states maintained during a Session.
+
+## Completion Report
+
+The structured factual hand-off for a normal no-Tool Turn stop, covering outcome, verification performed or unavailable, changed files, unresolved work, and next action.
+
+## Turn Budgets
+
+The host-enforced limits for one Turn's model requests, Tool Calls, active execution time, token usage, rendered output, and pre-output retries.

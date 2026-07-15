@@ -20,6 +20,7 @@ from mini_agent.domain.messages import (
     ToolResultMessage,
     UserMessage,
 )
+from mini_agent.domain.plans import PlanSnapshot
 
 CURRENT_SCHEMA_VERSION = 1
 SUPPORTED_SCHEMA_VERSIONS = frozenset({0, CURRENT_SCHEMA_VERSION})
@@ -42,6 +43,7 @@ class SessionEventType(StrEnum):
     CONFIGURATION_CHANGED = "configuration.changed"
     CONTEXT_MANIFEST_RECORDED = "context.manifest.recorded"
     INSTRUCTION_CHANGED = "instruction.changed"
+    PLAN_UPDATED = "plan.updated"
     TOOL_PROPOSED = "tool.proposed"
     TOOL_VALIDATED = "tool.validated"
     TOOL_STARTED = "tool.started"
@@ -182,6 +184,8 @@ class TurnProjection:
     request_count: int = 0
     assistant_messages: tuple[AssistantMessage, ...] = ()
     tool_calls: tuple[ToolCallProjection, ...] = ()
+    plan: PlanSnapshot | None = None
+    plan_snapshots: tuple[PlanSnapshot, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,6 +209,15 @@ class SessionProjection:
         for turn in reversed(self.turns):
             if turn.status is SessionStatus.ACTIVE:
                 return turn
+        return None
+
+    @property
+    def current_plan(self) -> PlanSnapshot | None:
+        """Return the latest visible Plan snapshot, if one exists."""
+
+        for turn in reversed(self.turns):
+            if turn.plan is not None:
+                return turn.plan
         return None
 
     @property
@@ -293,7 +306,25 @@ def rebuild_projection(events: tuple[SessionEvent, ...]) -> SessionProjection:
             continue
 
         turn = _turn_for_event(turns, event)
-        if event_type is SessionEventType.USER_MESSAGE:
+        if event_type is SessionEventType.PLAN_UPDATED:
+            raw_plan = event.payload.get("plan")
+            if not isinstance(raw_plan, dict):
+                raise InvalidSessionEvents("plan.updated must contain a plan object")
+            try:
+                plan = PlanSnapshot.from_dict(raw_plan)
+            except ValueError as exc:
+                raise InvalidSessionEvents(str(exc)) from exc
+            if turn.plan is not None:
+                if turn.plan.plan_id != plan.plan_id:
+                    raise InvalidSessionEvents("a Turn cannot replace its Plan identity")
+                if plan.updated_at < turn.plan.updated_at:
+                    raise InvalidSessionEvents("Plan snapshots must move forward in time")
+            turns[turn.turn_id] = replace(
+                turn,
+                plan=plan,
+                plan_snapshots=(*turn.plan_snapshots, plan),
+            )
+        elif event_type is SessionEventType.USER_MESSAGE:
             content = _payload_string(event, "content")
             user_message = UserMessage(content)
             if turn.user_message is not None:

@@ -6,8 +6,10 @@ import asyncio
 import hashlib
 import inspect
 import json
-from collections.abc import Mapping
-from dataclasses import dataclass
+import random
+import threading
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import cast
 
@@ -25,8 +27,17 @@ from mini_agent.application.ports import (
 from mini_agent.configuration import ConfigurationResolver, EffectiveConfiguration, PermissionMode
 from mini_agent.context import ContextBuilder, ContextFrame
 from mini_agent.domain.messages import AssistantMessage, Message, ToolResultMessage, UserMessage
+from mini_agent.domain.plans import PlanSnapshot, PlanStep, PlanStepStatus
+from mini_agent.domain.reports import CompletionReport
 from mini_agent.domain.sessions import JSONValue, SessionEvent, SessionEventType
-from mini_agent.domain.streams import StreamEvent
+from mini_agent.domain.streams import (
+    Failure,
+    StreamEvent,
+    TextDelta,
+    ToolCallArgumentDelta,
+    ToolCallCompleted,
+    ToolCallStarted,
+)
 from mini_agent.domain.turns import InvalidStream, StreamFailed, close_agent_response
 from mini_agent.tools.contracts import (
     PermissionDecision,
@@ -40,6 +51,47 @@ from mini_agent.tools.contracts import (
 )
 from mini_agent.tools.patches import WriteValidationError
 from mini_agent.tools.workspace import Workspace, WorkspacePathError
+
+
+@dataclass(frozen=True, slots=True)
+class TurnBudgets:
+    """Host limits for one Agent Turn.
+
+    The model-request, Tool-call, and active-time defaults mirror the MVP
+    specification.  Token, rendered-output, and pre-output retry limits are
+    kept here so the application loop cannot accidentally become unbounded;
+    callers may lower them for a smaller or more defensive host.
+    """
+
+    max_model_requests: int = 25
+    max_tool_calls: int = 50
+    max_active_seconds: int = 30 * 60
+    max_total_tokens: int = 1_000_000
+    max_output_bytes: int = 1_024 * 1_024
+    max_retries: int = 2
+
+    def __post_init__(self) -> None:
+        if self.max_model_requests > 25 or self.max_tool_calls > 50:
+            raise ValueError("Turn budgets exceed the host safety ceiling")
+        if self.max_active_seconds > 30 * 60:
+            raise ValueError("active execution budget exceeds the host safety ceiling")
+        if self.max_total_tokens > 1_000_000 or self.max_output_bytes > 1_024 * 1_024:
+            raise ValueError("output budget exceeds the host safety ceiling")
+        if self.max_retries > 2:
+            raise ValueError("retry budget exceeds the host safety ceiling")
+        for name in (
+            "max_model_requests",
+            "max_tool_calls",
+            "max_total_tokens",
+            "max_output_bytes",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or value < 1:
+                raise ValueError(f"{name} must be at least one")
+        if isinstance(self.max_active_seconds, bool) or self.max_active_seconds < 0:
+            raise ValueError("max_active_seconds cannot be negative")
+        if isinstance(self.max_retries, bool) or self.max_retries < 0:
+            raise ValueError("max_retries cannot be negative")
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +110,7 @@ class AgentTurnResult:
     model_request_count: int
     tool_call_count: int
     stream_events: tuple[StreamEvent, ...]
+    completion_report: CompletionReport
 
 
 class ReadOnlyPermissionGate:
@@ -90,6 +143,8 @@ class AgentTurnApplication:
         request_targets: tuple[str, ...] = (),
         permission_gate: PermissionGate | None = None,
         user_interaction: UserInteraction | None = None,
+        budgets: TurnBudgets | None = None,
+        retry_sleep: Callable[[float], Awaitable[object]] = asyncio.sleep,
     ) -> None:
         self._provider = provider
         self._workspace = workspace
@@ -106,6 +161,33 @@ class AgentTurnApplication:
             PermissionMode.SUGGEST,
             interaction=user_interaction,
         )
+        self._budgets = budgets
+        self._active_sessions: set[str] = set()
+        self._active_sessions_lock = threading.Lock()
+        self._retry_sleep = retry_sleep
+
+    def _turn_budgets(self, configuration: EffectiveConfiguration | None) -> TurnBudgets:
+        if self._budgets is not None:
+            return self._budgets
+        return TurnBudgets(
+            max_model_requests=(
+                configuration.max_model_requests if configuration is not None else 25
+            ),
+            max_tool_calls=configuration.max_tool_calls if configuration is not None else 50,
+            max_active_seconds=(
+                configuration.max_active_seconds if configuration is not None else 30 * 60
+            ),
+        )
+
+    def _claim_active_session(self, session_id: str) -> None:
+        with self._active_sessions_lock:
+            if session_id in self._active_sessions:
+                raise AgentTurnError("Session already has an active Turn")
+            self._active_sessions.add(session_id)
+
+    def _release_active_session(self, session_id: str) -> None:
+        with self._active_sessions_lock:
+            self._active_sessions.discard(session_id)
 
     async def run(
         self,
@@ -119,6 +201,7 @@ class AgentTurnApplication:
         if requested_session_id is not None and self._session_store is None:
             raise ValueError("session_id requires a Session Store")
         resolved_session_id = session_id or self._id_generator.new_id("session")
+        self._claim_active_session(resolved_session_id)
         turn_id = self._id_generator.new_id("turn")
         started_at = self._clock.now()
         writer: SessionWriter | None = None
@@ -131,6 +214,10 @@ class AgentTurnApplication:
         output_tokens = 0
         request_count = 0
         tool_count = 0
+        retry_count = 0
+        output_bytes = 0
+        plan: PlanSnapshot | None = None
+        tool_observations: list[tuple[ToolCall, ToolResult]] = []
         effective_configuration = self._configuration
 
         try:
@@ -166,35 +253,38 @@ class AgentTurnApplication:
             else:
                 user_event = None
             conversation = (*history, user_message)
+            budgets = self._turn_budgets(effective_configuration)
         except BaseException as exc:
             if writer is not None:
                 self._record_failed_turn(writer, turn_id, None, exc)
                 writer.close()
+            self._release_active_session(resolved_session_id)
             raise
 
         permission_gate = self._permission_gate or self._default_permission_gate
-        if isinstance(permission_gate, PermissionPolicyGate):
-            permission_gate.begin_session(resolved_session_id)
-            permission_gate.set_mode(
-                effective_configuration.permission_mode
-                if effective_configuration is not None
-                else PermissionMode.SUGGEST
+        try:
+            if isinstance(permission_gate, PermissionPolicyGate):
+                permission_gate.begin_session(resolved_session_id)
+                permission_gate.set_mode(
+                    effective_configuration.permission_mode
+                    if effective_configuration is not None
+                    else PermissionMode.SUGGEST
+                )
+            execution_workspace = (
+                self._workspace.for_session(resolved_session_id)
+                if writer is not None
+                else self._workspace
             )
-        execution_workspace = (
-            self._workspace.for_session(resolved_session_id)
-            if writer is not None
-            else self._workspace
-        )
-
-        max_requests = effective_configuration.max_model_requests if effective_configuration else 25
-        max_tools = effective_configuration.max_tool_calls if effective_configuration else 50
-        max_active_seconds = (
-            effective_configuration.max_active_seconds if effective_configuration else 30 * 60
-        )
+        except BaseException as exc:
+            if writer is not None:
+                self._record_failed_turn(writer, turn_id, None, exc)
+                writer.close()
+            self._release_active_session(resolved_session_id)
+            raise
 
         try:
-            while request_count < max_requests:
-                self._ensure_active_budget(started_at, max_active_seconds)
+            while request_count < budgets.max_model_requests:
+                self._ensure_active_budget(started_at, budgets.max_active_seconds)
                 request_count += 1
                 request_id = self._id_generator.new_id("request")
                 frame = self._build_frame(
@@ -204,6 +294,7 @@ class AgentTurnApplication:
                     history=_history_without_current_user(conversation, history, user_message),
                     configuration=effective_configuration,
                     writer=writer,
+                    plan=plan,
                 )
                 if writer is not None:
                     causation_id = user_event.event_id if user_event is not None else None
@@ -237,7 +328,10 @@ class AgentTurnApplication:
                     async for event in self._provider.stream(provider_input):
                         stream_events.append(event)
                         all_stream_events.append(event)
-                        self._ensure_active_budget(started_at, max_active_seconds)
+                        self._ensure_active_budget(started_at, budgets.max_active_seconds)
+                        output_bytes += _stream_output_bytes(event)
+                        if output_bytes > budgets.max_output_bytes:
+                            raise AgentLimitError("model output budget exhausted")
                         if on_event is not None:
                             observed = on_event(event)
                             if inspect.isawaitable(observed):
@@ -252,6 +346,15 @@ class AgentTurnApplication:
                             causation_id=request_event.event_id,
                             timestamp=self._clock.now(),
                         )
+                    if (
+                        isinstance(exc, StreamFailed)
+                        and exc.event.failure.retryable
+                        and not _stream_has_model_output(stream_events)
+                        and retry_count < budgets.max_retries
+                    ):
+                        await self._wait_before_retry(exc.event.failure, retry_count)
+                        retry_count += 1
+                        continue
                     raise
 
                 input_tokens += response.usage.input_tokens
@@ -279,7 +382,20 @@ class AgentTurnApplication:
                     assistant_event = None
                 conversation = (*conversation, response.message)
 
+                if input_tokens + output_tokens > budgets.max_total_tokens:
+                    raise AgentLimitError("token usage budget exhausted")
+
                 if not response.message.tool_calls:
+                    report = _completion_report(tool_observations)
+                    plan_event: SessionEvent | None = None
+                    if plan is not None:
+                        plan = _finish_plan(plan, report, self._clock.now())
+                        plan_event = self._append_plan_event(
+                            writer,
+                            plan,
+                            turn_id=turn_id,
+                            causation_id=assistant_event.event_id if assistant_event else None,
+                        )
                     completed_at = self._clock.now()
                     if writer is not None and assistant_event is not None:
                         writer.append(
@@ -288,9 +404,14 @@ class AgentTurnApplication:
                                 "outcome": "completed",
                                 "input_tokens": input_tokens,
                                 "output_tokens": output_tokens,
+                                "model_request_count": request_count,
+                                "tool_call_count": tool_count,
+                                "report": report.as_dict(),
                             },
                             turn_id=turn_id,
-                            causation_id=assistant_event.event_id,
+                            causation_id=(
+                                plan_event.event_id if plan_event else assistant_event.event_id
+                            ),
                             timestamp=completed_at,
                         )
                     return AgentTurnResult(
@@ -306,10 +427,25 @@ class AgentTurnApplication:
                         model_request_count=request_count,
                         tool_call_count=tool_count,
                         stream_events=tuple(all_stream_events),
+                        completion_report=report,
+                    )
+
+                if plan is None and _requires_plan(task, response.message.tool_calls):
+                    plan = _new_plan(
+                        task,
+                        response.message.tool_calls,
+                        self._id_generator.new_id("plan"),
+                        self._clock.now(),
+                    )
+                    self._append_plan_event(
+                        writer,
+                        plan,
+                        turn_id=turn_id,
+                        causation_id=assistant_event.event_id if assistant_event else None,
                     )
 
                 for block in response.message.tool_calls:
-                    if tool_count >= max_tools:
+                    if tool_count >= budgets.max_tool_calls:
                         raise AgentLimitError("Tool Call budget exhausted")
                     tool_count += 1
                     call = ToolCall(
@@ -347,14 +483,22 @@ class AgentTurnApplication:
                         turn_id=turn_id,
                         causation_id=terminal_causation,
                     )
-                    del terminal_event
                     result_message = ToolResultMessage(
                         call.tool_call_id,
                         result.text,
                         result.outcome.value,
                     )
                     tool_messages.append(result_message)
+                    tool_observations.append((call, result))
                     conversation = (*conversation, result_message)
+                    if plan is not None:
+                        plan = _advance_plan(plan, call.name, result, self._clock.now())
+                        self._append_plan_event(
+                            writer,
+                            plan,
+                            turn_id=turn_id,
+                            causation_id=terminal_event.event_id if terminal_event else None,
+                        )
                     if result.outcome in {ToolOutcome.INTERRUPTED, ToolOutcome.CANCELLED}:
                         raise asyncio.CancelledError
                 continue
@@ -366,6 +510,7 @@ class AgentTurnApplication:
         finally:
             if writer is not None:
                 writer.close()
+            self._release_active_session(resolved_session_id)
 
     def _build_frame(
         self,
@@ -376,6 +521,7 @@ class AgentTurnApplication:
         history: tuple[Message, ...],
         configuration: EffectiveConfiguration | None,
         writer: SessionWriter | None,
+        plan: PlanSnapshot | None,
     ) -> ContextFrame | None:
         if self._context_builder is None:
             return None
@@ -393,6 +539,7 @@ class AgentTurnApplication:
             targets=self._request_targets,
             history=history,
             configuration=configuration,
+            plan=plan.as_dict() if plan is not None else None,
             tool_definitions=[
                 definition.model_dump(mode="json")
                 for definition in self._tool_registry.definitions()
@@ -554,6 +701,14 @@ class AgentTurnApplication:
         if elapsed >= max_active_seconds:
             raise AgentLimitError("active execution budget exhausted")
 
+    async def _wait_before_retry(self, failure: Failure, attempt: int) -> None:
+        if failure.retry_after_seconds is not None:
+            delay = min(failure.retry_after_seconds, 60.0)
+        else:
+            base = min(60.0, 0.25 * (2**attempt))
+            delay = random.uniform(base * 0.5, base * 1.5)
+        await self._retry_sleep(delay)
+
     def _append_tool_event(
         self,
         writer: SessionWriter | None,
@@ -609,6 +764,24 @@ class AgentTurnApplication:
             timestamp=self._clock.now(),
         )
 
+    def _append_plan_event(
+        self,
+        writer: SessionWriter | None,
+        plan: PlanSnapshot,
+        *,
+        turn_id: str,
+        causation_id: str | None,
+    ) -> SessionEvent | None:
+        if writer is None:
+            return None
+        return writer.append(
+            SessionEventType.PLAN_UPDATED,
+            {"plan": plan.as_dict()},
+            turn_id=turn_id,
+            causation_id=causation_id,
+            timestamp=plan.updated_at,
+        )
+
     def _record_failed_turn(
         self,
         writer: SessionWriter,
@@ -631,6 +804,213 @@ class AgentTurnApplication:
 
 class AgentLimitError(RuntimeError):
     """Raised when the host safety budget prevents more model/tool work."""
+
+
+class AgentTurnError(RuntimeError):
+    """Raised when a Session already has an active Turn in this host."""
+
+
+def _stream_output_bytes(event: StreamEvent) -> int:
+    if isinstance(event, TextDelta):
+        return len(event.text.encode("utf-8"))
+    if isinstance(event, ToolCallArgumentDelta):
+        return len(event.arguments.encode("utf-8"))
+    if isinstance(event, ToolCallStarted):
+        return len(event.name.encode("utf-8"))
+    if isinstance(event, ToolCallCompleted) and event.arguments is not None:
+        return len(json.dumps(event.arguments, ensure_ascii=False).encode("utf-8"))
+    return 0
+
+
+def _stream_has_model_output(events: list[StreamEvent]) -> bool:
+    return any(
+        isinstance(event, (TextDelta, ToolCallArgumentDelta, ToolCallStarted, ToolCallCompleted))
+        for event in events
+    )
+
+
+_PLAN_TOOL_NAMES = {
+    "inspect": frozenset({"read_file", "search_files"}),
+    "change": frozenset({"apply_patch", "create_file"}),
+    "verify": frozenset({"shell"}),
+}
+_TOOL_PLAN_STEP = {
+    tool_name: step_id
+    for step_id, tool_names in _PLAN_TOOL_NAMES.items()
+    for tool_name in tool_names
+}
+
+
+def _requires_plan(task: str, calls: tuple[object, ...]) -> bool:
+    """Use a conservative observable heuristic for complex work.
+
+    A single safe read remains lightweight.  Multiple requested operations or
+    a task naming multiple phases (inspect/edit/test/verify) receives a Plan;
+    the model never gets to decide whether host safety state is persisted.
+    """
+
+    if len(calls) > 1:
+        return True
+    lowered = task.casefold()
+    phases = (
+        ("inspect", "read", "search", "find"),
+        ("edit", "change", "update", "modify", "create", "implement", "fix"),
+        ("test", "verify", "check", "run"),
+    )
+    return sum(any(word in lowered for word in group) for group in phases) >= 2
+
+
+def _new_plan(
+    task: str,
+    calls: tuple[object, ...],
+    plan_id: str,
+    timestamp: datetime,
+) -> PlanSnapshot:
+    names = {
+        getattr(call, "name", "") for call in calls if isinstance(getattr(call, "name", ""), str)
+    }
+    descriptions: list[tuple[str, str]] = []
+    if names & _PLAN_TOOL_NAMES["inspect"]:
+        descriptions.append(("inspect", "Inspect the relevant repository code"))
+    if names & _PLAN_TOOL_NAMES["change"] or any(
+        word in task.casefold()
+        for word in ("edit", "change", "update", "modify", "create", "implement", "fix")
+    ):
+        descriptions.append(("change", "Apply the requested code change"))
+    if names & _PLAN_TOOL_NAMES["verify"] or any(
+        word in task.casefold() for word in ("test", "verify", "check", "run")
+    ):
+        descriptions.append(("verify", "Run the requested verification"))
+    if not descriptions:
+        descriptions.append(("work", "Complete the requested repository work"))
+    descriptions.append(("report", "Report the observable outcome"))
+    steps = tuple(
+        PlanStep(
+            step_id=step_id,
+            description=description,
+            status=PlanStepStatus.IN_PROGRESS if index == 0 else PlanStepStatus.PENDING,
+            updated_at=timestamp,
+        )
+        for index, (step_id, description) in enumerate(descriptions)
+    )
+    return PlanSnapshot(plan_id, task.strip(), steps, timestamp)
+
+
+def _advance_plan(
+    plan: PlanSnapshot,
+    tool_name: str,
+    result: ToolResult,
+    timestamp: datetime,
+) -> PlanSnapshot:
+    category = _TOOL_PLAN_STEP.get(tool_name, "work")
+    updated: list[PlanStep] = []
+    matched = False
+    for step in plan.steps:
+        if step.step_id == category and step.status is not PlanStepStatus.COMPLETED:
+            matched = True
+            updated.append(
+                replace(
+                    step,
+                    status=(
+                        PlanStepStatus.COMPLETED
+                        if result.outcome is ToolOutcome.SUCCESS
+                        else PlanStepStatus.PENDING
+                    ),
+                    result_summary=(
+                        "completed successfully"
+                        if result.outcome is ToolOutcome.SUCCESS
+                        else f"Tool observation: {result.outcome.value}"
+                    ),
+                    updated_at=timestamp,
+                )
+            )
+        else:
+            updated.append(step)
+    if not matched:
+        updated = list(plan.steps)
+    if result.outcome is ToolOutcome.SUCCESS:
+        for index, step in enumerate(updated):
+            if step.status is PlanStepStatus.PENDING:
+                updated[index] = replace(
+                    step,
+                    status=PlanStepStatus.IN_PROGRESS,
+                    updated_at=timestamp,
+                )
+                break
+    return PlanSnapshot(plan.plan_id, plan.objective, tuple(updated), timestamp)
+
+
+def _finish_plan(
+    plan: PlanSnapshot,
+    report: CompletionReport,
+    timestamp: datetime,
+) -> PlanSnapshot:
+    summary = "normal model stop"
+    if report.unresolved_work:
+        summary = "completed with unresolved Tool observations"
+    return PlanSnapshot(
+        plan.plan_id,
+        plan.objective,
+        tuple(
+            replace(
+                step,
+                status=PlanStepStatus.COMPLETED,
+                result_summary=step.result_summary or summary,
+                updated_at=timestamp,
+            )
+            for step in plan.steps
+        ),
+        timestamp,
+    )
+
+
+def _completion_report(
+    observations: list[tuple[ToolCall, ToolResult]],
+) -> CompletionReport:
+    changed_files: set[str] = set()
+    verification: list[str] = []
+    unresolved: dict[str, str] = {}
+    changed_tools = {"apply_patch", "create_file"}
+    for call, result in observations:
+        raw_changed = result.data.get("changed_files", [])
+        if call.name in changed_tools and isinstance(raw_changed, list):
+            changed_files.update(item for item in raw_changed if isinstance(item, str))
+        if call.name == "shell":
+            command = call.arguments.get("command")
+            if isinstance(command, str) and command.strip():
+                verification.append(command.strip())
+        observation_key = json.dumps(
+            {"name": call.name, "arguments": call.arguments},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        if result.outcome is ToolOutcome.SUCCESS:
+            unresolved.pop(observation_key, None)
+        if result.outcome is not ToolOutcome.SUCCESS:
+            code = result.error.code if result.error is not None else result.outcome.value
+            unresolved[observation_key] = (
+                f"Tool Call {call.tool_call_id} ended with {result.outcome.value} ({code})"
+            )
+    if not verification:
+        verification = ["unavailable"]
+    unresolved_items = tuple(unresolved.values())
+    if unresolved_items:
+        outcome = "completed-with-unresolved-work"
+        next_action = "Resolve the reported Tool observations and rerun verification."
+    elif verification == ["unavailable"] and changed_files:
+        outcome = "completed"
+        next_action = "Run the relevant verification command before delivery."
+    else:
+        outcome = "completed"
+        next_action = "No further action is required."
+    return CompletionReport(
+        outcome=outcome,
+        verification=tuple(verification),
+        changed_files=tuple(sorted(changed_files)),
+        unresolved_work=unresolved_items,
+        next_action=next_action,
+    )
 
 
 def _history_without_current_user(
@@ -734,6 +1114,15 @@ def _tool_event_summary(event: SessionEvent) -> dict[str, object]:
 
 
 def _failure_payload(exc: BaseException) -> dict[str, JSONValue]:
+    if isinstance(exc, asyncio.CancelledError):
+        return {
+            "category": "cancellation",
+            "code": "turn-cancelled",
+            "source": "application",
+            "description": "the active Turn was cancelled by the host or user",
+            "retryable": False,
+            "required_user_action": "inspect the Session before starting another Turn",
+        }
     if isinstance(exc, StreamFailed):
         failure = exc.event.failure
         return {
