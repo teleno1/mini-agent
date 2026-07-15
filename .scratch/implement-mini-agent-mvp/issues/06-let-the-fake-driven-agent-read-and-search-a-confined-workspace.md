@@ -4,7 +4,7 @@
 
 **Blocked by:** 03 - Persist, list, and resume text-only Sessions.
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 - [ ] Define the shared typed Tool, Risk Assessment, Tool Call, Tool Result, registry, and lifecycle contracts without UI or permission prompting inside Tools.
 - [ ] Resolve one real Workspace root and reject absolute, drive-changing, UNC, traversal, device, binary, sensitive, and out-of-bound targets with platform-correct comparisons.
