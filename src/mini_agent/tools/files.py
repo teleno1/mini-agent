@@ -129,14 +129,21 @@ class _WorkspaceTool:
     side_effect = SideEffectCategory.READ
     limits = ToolLimits.bounded(timeout_seconds=30.0, max_output_bytes=MAX_BYTES)
 
-    def _invalid(self, call_id: str, name: str, message: str) -> ToolResult:
+    def _failure(
+        self,
+        call_id: str,
+        name: str,
+        code: str,
+        message: str,
+        *,
+        category: str = "tool-execution",
+    ) -> ToolResult:
         from mini_agent.tools.contracts import ToolCall
 
         return ToolResult.failed(
             ToolCall(tool_call_id=call_id, name=name, arguments={}),
-            outcome=ToolOutcome.INVALID,
-            category="tool-validation",
-            code="invalid-input",
+            category=category,
+            code=code,
             message=message,
         )
 
@@ -164,27 +171,21 @@ class ReadFileTool(_WorkspaceTool):
             raw = workspace.read_text_bytes(target)
             return _read_range(target.relative_path, raw, request)
         except BinaryTargetError:
-            return self._failure(call_id, "binary", "binary Workspace content is not readable")
+            return self._failure(
+                call_id, self.name, "binary", "binary Workspace content is not readable"
+            )
         except WorkspacePathError as exc:
-            return self._failure(call_id, exc.code, str(exc))
+            return self._failure(call_id, self.name, exc.code, str(exc))
         except WorkspaceError:
-            return self._failure(call_id, "read", "Workspace file could not be read")
+            return self._failure(call_id, self.name, "read", "Workspace file could not be read")
         except UnicodeDecodeError:
-            return self._failure(call_id, "binary", "binary Workspace content is not readable")
+            return self._failure(
+                call_id, self.name, "binary", "binary Workspace content is not readable"
+            )
         except ValueError:
-            return self._failure(call_id, "range", "read range continuation is invalid")
+            return self._failure(call_id, self.name, "range", "read range continuation is invalid")
         except OSError:
-            return self._failure(call_id, "read", "Workspace file could not be read")
-
-    def _failure(self, call_id: str, code: str, message: str) -> ToolResult:
-        from mini_agent.tools.contracts import ToolCall
-
-        return ToolResult.failed(
-            ToolCall(tool_call_id=str(call_id), name=self.name, arguments={}),
-            category="tool-execution",
-            code=code,
-            message=message,
-        )
+            return self._failure(call_id, self.name, "read", "Workspace file could not be read")
 
 
 class SearchFilesTool(_WorkspaceTool):
@@ -208,7 +209,7 @@ class SearchFilesTool(_WorkspaceTool):
         try:
             target = workspace.resolve_read(request.directory, directory=True)
         except WorkspacePathError as exc:
-            return self._failure(call_id, exc.code, str(exc))
+            return self._failure(call_id, self.name, exc.code, str(exc))
         try:
             if shutil.which("rg"):
                 matches = await asyncio.to_thread(
@@ -232,21 +233,15 @@ class SearchFilesTool(_WorkspaceTool):
                 },
             )
         except ValueError:
-            return self._failure(call_id, "regex", "search pattern is invalid")
+            return self._failure(call_id, self.name, "regex", "search pattern is invalid")
         except subprocess.TimeoutExpired:
-            return self._failure(call_id, "timeout", "repository search exceeded its time limit")
+            return self._failure(
+                call_id, self.name, "timeout", "repository search exceeded its time limit"
+            )
         except OSError:
-            return self._failure(call_id, "search", "repository search could not be completed")
-
-    def _failure(self, call_id: str, code: str, message: str) -> ToolResult:
-        from mini_agent.tools.contracts import ToolCall
-
-        return ToolResult.failed(
-            ToolCall(tool_call_id=str(call_id), name=self.name, arguments={}),
-            category="tool-execution",
-            code=code,
-            message=message,
-        )
+            return self._failure(
+                call_id, self.name, "search", "repository search could not be completed"
+            )
 
     def _search_with_rg(
         self, workspace: Workspace, root: Path, request: SearchFilesInput
@@ -262,8 +257,6 @@ class SearchFilesTool(_WorkspaceTool):
             "--column",
             "--color",
             "never",
-            "--binary-files",
-            "without-match",
             "--max-count",
             str(request.max_matches),
         ]
@@ -452,9 +445,7 @@ def _literal_search(line: str, query: str, case_sensitive: bool) -> re.Match[str
     return re.search(re.escape(query), line, flags)
 
 
-def _parse_rg_output(
-    raw: bytes, request: SearchFilesInput, workspace: Workspace
-) -> _SearchResult:
+def _parse_rg_output(raw: bytes, request: SearchFilesInput, workspace: Workspace) -> _SearchResult:
     text = raw.decode("utf-8", errors="replace")
     items: list[dict[str, Any]] = []
     used = 0

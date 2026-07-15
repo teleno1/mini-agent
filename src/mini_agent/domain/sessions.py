@@ -59,6 +59,17 @@ class SessionStatus(StrEnum):
     FAILED = "failed"
 
 
+class ToolCallStatus(StrEnum):
+    """Durable lifecycle status for one proposed Tool Call."""
+
+    PROPOSED = "proposed"
+    VALIDATED = "validated"
+    STARTED = "started"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    INTERRUPTED = "interrupted"
+
+
 class InvalidSessionEvents(ValueError):
     """Raised when otherwise parseable events cannot form a valid projection."""
 
@@ -148,7 +159,7 @@ class ToolCallProjection:
     tool_call_id: str
     name: str
     arguments: dict[str, JSONValue]
-    status: str
+    status: ToolCallStatus
     risk: dict[str, JSONValue] | None = None
     result: ToolResultMessage | None = None
 
@@ -363,7 +374,7 @@ def rebuild_projection(events: tuple[SessionEvent, ...]) -> SessionProjection:
                 tool_call_id=_payload_string(event, "tool_call_id"),
                 name=_payload_string(event, "name"),
                 arguments=_payload_object(event, "arguments"),
-                status="proposed",
+                status=ToolCallStatus.PROPOSED,
             )
             if call.tool_call_id in tool_states:
                 raise InvalidSessionEvents(f"Tool Call {call.tool_call_id!r} was proposed twice")
@@ -371,21 +382,21 @@ def rebuild_projection(events: tuple[SessionEvent, ...]) -> SessionProjection:
             turns[turn.turn_id] = replace(turn, tool_calls=(*turn.tool_calls, call))
         elif event_type is SessionEventType.TOOL_VALIDATED:
             call = _tool_for_event(tool_states, event)
-            if call.status != "proposed":
+            if call.status is not ToolCallStatus.PROPOSED:
                 raise InvalidSessionEvents(
                     f"Tool Call {call.tool_call_id!r} validated out of order"
                 )
             risk = event.payload.get("risk", {})
             if not isinstance(risk, dict):
                 raise InvalidSessionEvents("tool.validated risk must be an object")
-            updated = replace(call, status="validated", risk=risk)
+            updated = replace(call, status=ToolCallStatus.VALIDATED, risk=risk)
             tool_states[call.tool_call_id] = updated
             turns[turn.turn_id] = replace(turn, tool_calls=_replace_tool(turn.tool_calls, updated))
         elif event_type is SessionEventType.TOOL_STARTED:
             call = _tool_for_event(tool_states, event)
-            if call.status != "validated":
+            if call.status is not ToolCallStatus.VALIDATED:
                 raise InvalidSessionEvents(f"Tool Call {call.tool_call_id!r} started out of order")
-            updated = replace(call, status="started")
+            updated = replace(call, status=ToolCallStatus.STARTED)
             tool_states[call.tool_call_id] = updated
             turns[turn.turn_id] = replace(turn, tool_calls=_replace_tool(turn.tool_calls, updated))
         elif event_type in {
@@ -395,9 +406,16 @@ def rebuild_projection(events: tuple[SessionEvent, ...]) -> SessionProjection:
         }:
             call = _tool_for_event(tool_states, event)
             outcome = _payload_string(event, "outcome")
-            if call.status in {"completed", "failed", "interrupted"}:
+            if call.status in {
+                ToolCallStatus.COMPLETED,
+                ToolCallStatus.FAILED,
+                ToolCallStatus.INTERRUPTED,
+            }:
                 raise InvalidSessionEvents(f"Tool Call {call.tool_call_id!r} has two results")
-            if event_type is SessionEventType.TOOL_COMPLETED and call.status != "started":
+            if (
+                event_type is SessionEventType.TOOL_COMPLETED
+                and call.status is not ToolCallStatus.STARTED
+            ):
                 raise InvalidSessionEvents(
                     f"Tool Call {call.tool_call_id!r} completed before it started"
                 )
@@ -405,7 +423,7 @@ def rebuild_projection(events: tuple[SessionEvent, ...]) -> SessionProjection:
             if not isinstance(result_text, str):
                 raise InvalidSessionEvents("Tool terminal result_text must be a string")
             result = ToolResultMessage(call.tool_call_id, result_text, outcome)
-            status_value = event_type.value.rsplit(".", 1)[-1]
+            status_value = ToolCallStatus(event_type.value.rsplit(".", 1)[-1])
             updated = replace(call, status=status_value, result=result)
             tool_states[call.tool_call_id] = updated
             turns[turn.turn_id] = replace(turn, tool_calls=_replace_tool(turn.tool_calls, updated))
@@ -417,7 +435,12 @@ def rebuild_projection(events: tuple[SessionEvent, ...]) -> SessionProjection:
                 or not turn.request_completed
                 or turn.assistant_message.tool_calls
                 or any(
-                    call.status not in {"completed", "failed", "interrupted"}
+                    call.status
+                    not in {
+                        ToolCallStatus.COMPLETED,
+                        ToolCallStatus.FAILED,
+                        ToolCallStatus.INTERRUPTED,
+                    }
                     for call in turn.tool_calls
                 )
                 or any(state == "started" for state in request_states[turn.turn_id].values())
@@ -431,7 +454,7 @@ def rebuild_projection(events: tuple[SessionEvent, ...]) -> SessionProjection:
             status = SessionStatus.COMPLETED
         elif event_type is SessionEventType.TURN_FAILED:
             if any(state == "started" for state in request_states[turn.turn_id].values()) or any(
-                call.status == "started" for call in turn.tool_calls
+                call.status is ToolCallStatus.STARTED for call in turn.tool_calls
             ):
                 raise InvalidSessionEvents(
                     f"Turn {turn.turn_id!r} failed before an operation reached a terminal state"

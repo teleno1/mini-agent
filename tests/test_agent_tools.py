@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -67,6 +68,30 @@ class _WriteProbeTool:
         )
 
 
+class _InterruptProbeTool:
+    name = "interrupt_probe"
+    description = "Probe an operation whose termination is uncertain."
+    side_effect = SideEffectCategory.READ
+    input_model = _WriteInput
+    limits = ToolLimits()
+
+    def __init__(self, started: asyncio.Event) -> None:
+        self.started = started
+
+    def assess(self, arguments: _WriteInput) -> RiskAssessment:
+        return RiskAssessment(
+            side_effect=self.side_effect,
+            resources=(arguments.path,),
+            summary="wait for an interrupt",
+        )
+
+    async def execute(self, workspace: Workspace, arguments: _WriteInput) -> ToolResult:
+        del workspace, arguments
+        self.started.set()
+        await asyncio.Event().wait()
+        raise AssertionError("the interrupted Tool should not return normally")
+
+
 def _provider_for_read(*, path: str, final_text: str) -> ScriptedFakeModelProvider:
     return ScriptedFakeModelProvider(
         responses=(
@@ -89,6 +114,28 @@ def _provider_for_read(*, path: str, final_text: str) -> ScriptedFakeModelProvid
                 ResponseStarted(request_id="request-final"),
                 TextDelta(text=final_text),
                 UsageReported(input_tokens=5, output_tokens=2),
+                ResponseCompleted(),
+            ),
+        )
+    )
+
+
+def _provider_for_search(*, final_text: str) -> ScriptedFakeModelProvider:
+    return ScriptedFakeModelProvider(
+        scripts=(
+            (
+                ResponseStarted(request_id="request-search"),
+                ToolCallStarted(tool_call_id="call-search", name="search_files"),
+                ToolCallArgumentDelta(
+                    tool_call_id="call-search",
+                    arguments=json.dumps({"query": "needle", "directory": "src", "glob": "*.py"}),
+                ),
+                ToolCallCompleted(tool_call_id="call-search"),
+                ResponseCompleted(stop_reason="tool_calls"),
+            ),
+            (
+                ResponseStarted(request_id="request-search-final"),
+                TextDelta(text=final_text),
                 ResponseCompleted(),
             ),
         )
@@ -156,6 +203,14 @@ async def test_fake_agent_records_serial_read_lifecycle_and_preserves_tool_pairi
     ]
     assert len(snapshot.projection.turns[0].tool_calls) == 1
     assert snapshot.projection.turns[0].tool_calls[0].result is not None
+    validated_event = next(
+        event for event in snapshot.events if event.event_type == SessionEventType.TOOL_VALIDATED
+    )
+    permission = validated_event.payload["permission"]
+    assert permission["tool_call_id"] == "call-read"
+    assert permission["decision"] == "allow"
+    assert permission["matched_rule"] == "safe-read"
+    assert len(permission["argument_hash"]) == 64
     terminal_events = [
         event
         for event in snapshot.events
@@ -190,9 +245,24 @@ async def test_fake_agent_returns_bounded_failure_and_model_receives_it(tmp_path
     assert "Workspace traversal" in result.tool_results[0].content
     assert isinstance(provider.requests[1][-1], ToolResultMessage)
     assert provider.requests[1][-1].outcome == ToolOutcome.FAILED.value
-    assert [event.event_type for event in snapshot.events].count(
-        SessionEventType.TOOL_FAILED
-    ) == 1
+    assert [event.event_type for event in snapshot.events].count(SessionEventType.TOOL_FAILED) == 1
+
+
+@pytest.mark.asyncio
+async def test_fake_agent_adapts_to_bounded_search_results(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "main.py").write_text("needle = True\n", encoding="utf-8")
+    provider = _provider_for_search(final_text="Search complete.")
+    application, _ = _application(tmp_path, provider)
+
+    result = await application.run("find needle")
+
+    assert result.assistant_message.content == "Search complete."
+    assert result.tool_results[0].tool_call_id == "call-search"
+    assert result.tool_results[0].outcome == ToolOutcome.SUCCESS.value
+    assert "src/main.py" in result.tool_results[0].content
+    assert isinstance(provider.requests[1][-1], ToolResultMessage)
+    assert provider.requests[1][-1].tool_call_id == "call-search"
 
 
 @pytest.mark.asyncio
@@ -258,6 +328,51 @@ async def test_non_read_tool_is_denied_without_ui_prompt_or_execution(tmp_path: 
 
 
 @pytest.mark.asyncio
+async def test_cancelled_started_tool_has_one_interrupted_terminal_event(tmp_path: Path) -> None:
+    provider = ScriptedFakeModelProvider(
+        responses=(
+            (
+                ResponseStarted(request_id="request-interrupt"),
+                ToolCallStarted(tool_call_id="call-interrupt", name="interrupt_probe"),
+                ToolCallArgumentDelta(
+                    tool_call_id="call-interrupt",
+                    arguments=json.dumps({"path": "main.py"}),
+                ),
+                ToolCallCompleted(tool_call_id="call-interrupt"),
+                ResponseCompleted(stop_reason="tool_calls"),
+            ),
+        )
+    )
+    started = asyncio.Event()
+    clock = DeterministicClock(datetime(2026, 1, 1, tzinfo=UTC))
+    ids = DeterministicIdGenerator()
+    store = SessionStore(tmp_path, clock=clock, id_generator=ids)
+    application = AgentTurnApplication(
+        provider=provider,
+        workspace=Workspace(tmp_path),
+        tool_registry=ToolRegistry([_InterruptProbeTool(started)]),
+        clock=clock,
+        id_generator=ids,
+        session_store=store,
+    )
+
+    task = asyncio.create_task(application.run("interrupt the read"))
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    snapshot = store.read("session-0001")
+    events = [event.event_type for event in snapshot.events]
+    assert events.count(SessionEventType.TOOL_INTERRUPTED) == 1
+    assert events.count(SessionEventType.TOOL_COMPLETED) == 0
+    assert events.count(SessionEventType.TOOL_FAILED) == 0
+    assert events.count(SessionEventType.TURN_FAILED) == 1
+    assert snapshot.projection is not None
+    assert snapshot.projection.turns[0].tool_calls[0].status == "interrupted"
+
+
+@pytest.mark.asyncio
 async def test_context_builder_preserves_structured_tool_pairing_for_next_request(
     tmp_path: Path,
 ) -> None:
@@ -281,11 +396,15 @@ async def test_context_builder_preserves_structured_tool_pairing_for_next_reques
     second_frame = provider.requests[1]
     assert isinstance(second_frame, ContextFrame)
     history = [
+        message for message in second_frame.messages if message.layer is ContextLayerName.HISTORY
+    ]
+    current_user = [
         message
         for message in second_frame.messages
-        if message.layer is ContextLayerName.HISTORY
+        if message.layer is ContextLayerName.CURRENT_USER
     ]
-    assert [message.role for message in history[:3]] == ["user", "assistant", "tool"]
-    assert '"tool_call_id": "call-read"' in history[1].content
-    assert '"name": "read_file"' in history[1].content
-    assert "print('ok')" in history[2].content
+    assert [message.content for message in current_user] == ["inspect the file"]
+    assert [message.role for message in history[:2]] == ["assistant", "tool"]
+    assert '"tool_call_id": "call-read"' in history[0].content
+    assert '"name": "read_file"' in history[0].content
+    assert "print('ok')" in history[1].content

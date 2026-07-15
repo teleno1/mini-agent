@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
@@ -174,9 +176,7 @@ class AgentTurnApplication:
                     task,
                     request_id=request_id,
                     resolved_session_id=resolved_session_id,
-                    history=conversation[:-1]
-                    if conversation and conversation[-1] is user_message
-                    else conversation,
+                    history=_history_without_current_user(conversation, history, user_message),
                     configuration=effective_configuration,
                     resumed=resumed,
                     writer=writer,
@@ -308,6 +308,11 @@ class AgentTurnApplication:
                         writer,
                         turn_id=turn_id,
                         causation_id=proposed_event.event_id if proposed_event else None,
+                        permission_mode=(
+                            effective_configuration.permission_mode.value
+                            if effective_configuration is not None
+                            else "read-only"
+                        ),
                     )
                     terminal_event = self._append_tool_terminal(
                         writer,
@@ -323,6 +328,8 @@ class AgentTurnApplication:
                     )
                     tool_messages.append(result_message)
                     conversation = (*conversation, result_message)
+                    if result.outcome is ToolOutcome.INTERRUPTED:
+                        raise asyncio.CancelledError
                 continue
             raise AgentLimitError("model request budget exhausted")
         except BaseException as exc:
@@ -375,6 +382,7 @@ class AgentTurnApplication:
         *,
         turn_id: str,
         causation_id: str | None,
+        permission_mode: str,
     ) -> tuple[ToolResult, str | None]:
         try:
             validated = self._tool_registry.validate(call)
@@ -382,6 +390,8 @@ class AgentTurnApplication:
             return invalid_result(
                 call, code="invalid-input", message="Tool arguments are invalid"
             ), causation_id
+        decision = self._permission_gate.decide(validated.risk)
+        decision_at = self._clock.now()
         validated_event = self._append_tool_event(
             writer,
             SessionEventType.TOOL_VALIDATED,
@@ -390,11 +400,18 @@ class AgentTurnApplication:
                 "name": call.name,
                 "arguments": cast(dict[str, JSONValue], call.arguments),
                 "risk": cast(dict[str, JSONValue], validated.risk.model_dump(mode="json")),
+                "permission": _permission_payload(
+                    call,
+                    validated.risk,
+                    decision,
+                    mode=permission_mode,
+                    timestamp=decision_at,
+                ),
             },
             turn_id=turn_id,
             causation_id=causation_id,
+            timestamp=decision_at,
         )
-        decision = self._permission_gate.decide(validated.risk)
         if decision is not PermissionDecision.ALLOW:
             return (
                 ToolResult.failed(
@@ -430,6 +447,17 @@ class AgentTurnApplication:
                 ),
                 started_event.event_id if started_event else causation_id,
             )
+        except asyncio.CancelledError:
+            return (
+                ToolResult.failed(
+                    call,
+                    outcome=ToolOutcome.INTERRUPTED,
+                    category="cancellation",
+                    code="tool-interrupted",
+                    message="Tool execution was interrupted before its side effects were known",
+                ),
+                started_event.event_id if started_event else causation_id,
+            )
         except Exception:
             return (
                 ToolResult.failed(
@@ -449,6 +477,7 @@ class AgentTurnApplication:
         *,
         turn_id: str,
         causation_id: str | None,
+        timestamp: datetime | None = None,
     ) -> SessionEvent | None:
         if writer is None:
             return None
@@ -457,7 +486,7 @@ class AgentTurnApplication:
             payload,
             turn_id=turn_id,
             causation_id=causation_id,
-            timestamp=self._clock.now(),
+            timestamp=timestamp or self._clock.now(),
         )
 
     def _append_tool_terminal(
@@ -473,6 +502,8 @@ class AgentTurnApplication:
         event_type = (
             SessionEventType.TOOL_COMPLETED
             if result.outcome is ToolOutcome.SUCCESS
+            else SessionEventType.TOOL_INTERRUPTED
+            if result.outcome is ToolOutcome.INTERRUPTED
             else SessionEventType.TOOL_FAILED
         )
         payload = cast(
@@ -515,6 +546,52 @@ class AgentTurnApplication:
 
 class AgentLimitError(RuntimeError):
     """Raised when the host safety budget prevents more model/tool work."""
+
+
+def _history_without_current_user(
+    conversation: tuple[Message, ...],
+    prior_history: tuple[Message, ...],
+    user_message: UserMessage,
+) -> tuple[Message, ...]:
+    """Keep the active task in the ContextFrame's current-user layer only."""
+
+    index = len(prior_history)
+    if index < len(conversation) and conversation[index] is user_message:
+        return (*conversation[:index], *conversation[index + 1 :])
+    return conversation
+
+
+def _permission_payload(
+    call: ToolCall,
+    risk: RiskAssessment,
+    decision: PermissionDecision,
+    *,
+    mode: str,
+    timestamp: datetime,
+) -> dict[str, JSONValue]:
+    arguments = json.dumps(
+        {"name": call.name, "arguments": call.arguments},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    allowed = decision is PermissionDecision.ALLOW
+    return {
+        "tool_call_id": call.tool_call_id,
+        "risk": cast(dict[str, JSONValue], risk.model_dump(mode="json")),
+        "mode": mode,
+        "decision": decision.value,
+        "matched_rule": "safe-read" if allowed else "read-only-deny",
+        "reason": (
+            "safe Workspace read automatically authorized"
+            if allowed
+            else "non-read Tool Call denied by the read-only host policy"
+        ),
+        "scope": "turn",
+        "resource_summary": list(risk.resources),
+        "argument_hash": hashlib.sha256(arguments).hexdigest(),
+        "timestamp": timestamp.isoformat(),
+    }
 
 
 def _assistant_payload(message: AssistantMessage) -> dict[str, JSONValue]:
