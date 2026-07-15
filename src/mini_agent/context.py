@@ -64,6 +64,7 @@ class ContextMessage:
     content: str
     layer: ContextLayerName
     authority: ContextAuthority
+    message: Message | None = None
 
     def __post_init__(self) -> None:
         if not self.content:
@@ -182,6 +183,7 @@ class ContextFrame:
     layers: tuple[ContextLayer, ...]
     manifest: ContextManifest
     instructions: InstructionSet
+    tool_definitions: tuple[dict[str, JSONValue], ...] = ()
 
     @property
     def token_estimate(self) -> int:
@@ -337,11 +339,15 @@ class ContextBuilder:
             included_event_range=included_event_range,
         )
         messages = _frame_messages(layers, history, selected_events)
+        structured_tool_definitions = tuple(
+            _json_object(value) for value in tool_definitions if isinstance(value, Mapping)
+        )
         return ContextFrame(
             messages=messages,
             layers=tuple(layers),
             manifest=manifest,
             instructions=instructions,
+            tool_definitions=structured_tool_definitions,
         )
 
     assemble = build
@@ -413,17 +419,20 @@ def _frame_messages(
             continue
         for item in history:
             if isinstance(item, ContextMessage):
-                role: ContextRole = item.role if item.role in {"user", "assistant"} else "user"
+                role: ContextRole = item.role
                 content = item.content
+                source_message = item.message
             else:
                 role = item.role
                 content = _message_content(item)
+                source_message = item
             messages.append(
                 ContextMessage(
                     role=role,
                     content=content,
                     layer=layer.name,
                     authority=layer.authority,
+                    message=source_message,
                 )
             )
         for event in selected_events:
@@ -470,3 +479,13 @@ def _render_value(value: object) -> str:
 def _sha256_json(value: object) -> str:
     encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _json_object(value: Mapping[str, object]) -> dict[str, JSONValue]:
+    """Copy structured Tool metadata into a frame-owned JSON shape."""
+
+    encoded = json.dumps(value, ensure_ascii=False)
+    decoded = json.loads(encoded)
+    if not isinstance(decoded, dict):
+        raise ValueError("Tool definition must be a JSON object")
+    return decoded

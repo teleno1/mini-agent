@@ -23,6 +23,10 @@ class ResponseStarted:
     request_id: str
     kind: Literal[StreamEventKind.RESPONSE_STARTED] = StreamEventKind.RESPONSE_STARTED
 
+    def __post_init__(self) -> None:
+        if not self.request_id.strip():
+            raise ValueError("response request ID cannot be blank")
+
 
 @dataclass(frozen=True, slots=True)
 class TextDelta:
@@ -37,6 +41,10 @@ class ToolCallStarted:
     tool_call_id: str
     name: str
     kind: Literal[StreamEventKind.TOOL_CALL_STARTED] = StreamEventKind.TOOL_CALL_STARTED
+
+    def __post_init__(self) -> None:
+        if not self.tool_call_id.strip() or not self.name.strip():
+            raise ValueError("Tool Call start requires an ID and name")
 
     @property
     def id(self) -> str:
@@ -53,6 +61,10 @@ class ToolCallArgumentDelta:
         StreamEventKind.TOOL_CALL_ARGUMENT_DELTA
     )
 
+    def __post_init__(self) -> None:
+        if not self.tool_call_id.strip():
+            raise ValueError("Tool Call argument delta requires an ID")
+
     @property
     def id(self) -> str:
         return self.tool_call_id
@@ -65,6 +77,10 @@ class ToolCallCompleted:
     tool_call_id: str
     arguments: dict[str, Any] | None = None
     kind: Literal[StreamEventKind.TOOL_CALL_COMPLETED] = StreamEventKind.TOOL_CALL_COMPLETED
+
+    def __post_init__(self) -> None:
+        if not self.tool_call_id.strip():
+            raise ValueError("Tool Call completion requires an ID")
 
     @property
     def id(self) -> str:
@@ -103,7 +119,8 @@ class Failure:
     redacted_description: str
     retryable: bool
     required_user_action: str
-    cause: str
+    cause: str | None = None
+    code: str = "provider-error"
 
     def __post_init__(self) -> None:
         if not all(
@@ -113,10 +130,12 @@ class Failure:
                 self.source,
                 self.redacted_description,
                 self.required_user_action,
-                self.cause,
+                self.code,
             )
         ):
             raise ValueError("failure fields cannot be blank")
+        if self.cause is not None and not self.cause.strip():
+            raise ValueError("failure cause cannot be blank when provided")
 
 
 type StreamEvent = (

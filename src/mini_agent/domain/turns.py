@@ -74,6 +74,8 @@ def close_text_response(events: tuple[StreamEvent, ...]) -> TextResponse:
             usage = event
             usage_reported = True
         elif isinstance(event, ResponseCompleted):
+            if event.stop_reason != "stop":
+                raise InvalidStream("text-only response must stop normally")
             completed = True
         elif isinstance(event, ResponseFailed):
             raise StreamFailed(event)
@@ -84,8 +86,10 @@ def close_text_response(events: tuple[StreamEvent, ...]) -> TextResponse:
 
     if not completed:
         raise InvalidStream("response must end with response-completed")
-
-    return TextResponse(message=AssistantMessage("".join(text_parts)), usage=usage)
+    content = "".join(text_parts)
+    if not content:
+        raise InvalidStream("text-only response must contain text")
+    return TextResponse(message=AssistantMessage(content), usage=usage)
 
 
 def close_agent_response(events: tuple[StreamEvent, ...]) -> AgentResponse:
@@ -167,8 +171,11 @@ def close_agent_response(events: tuple[StreamEvent, ...]) -> AgentResponse:
 
     if not completed:
         raise InvalidStream("response must end with response-completed")
+    content = "".join(text_parts)
+    if not content and not calls:
+        raise InvalidStream("response must contain text or Tool Calls")
     return AgentResponse(
-        message=AssistantMessage("".join(text_parts), tuple(calls)),
+        message=AssistantMessage(content, tuple(calls)),
         usage=usage,
         stop_reason=stop_reason,
     )

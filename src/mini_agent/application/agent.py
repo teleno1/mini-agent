@@ -26,7 +26,7 @@ from mini_agent.context import ContextBuilder, ContextFrame
 from mini_agent.domain.messages import AssistantMessage, Message, ToolResultMessage, UserMessage
 from mini_agent.domain.sessions import JSONValue, SessionEvent, SessionEventType
 from mini_agent.domain.streams import StreamEvent
-from mini_agent.domain.turns import StreamFailed, close_agent_response
+from mini_agent.domain.turns import InvalidStream, StreamFailed, close_agent_response
 from mini_agent.tools.contracts import (
     PermissionDecision,
     PermissionRequest,
@@ -681,16 +681,32 @@ def _tool_event_summary(event: SessionEvent) -> dict[str, object]:
     }
 
 
-def _failure_payload(exc: BaseException) -> dict[str, str]:
+def _failure_payload(exc: BaseException) -> dict[str, JSONValue]:
     if isinstance(exc, StreamFailed):
         failure = exc.event.failure
         return {
             "category": failure.category,
+            "code": failure.code,
             "source": failure.source,
             "description": failure.redacted_description,
+            "retryable": failure.retryable,
+            "required_user_action": failure.required_user_action,
+            "cause": failure.cause,
+        }
+    if isinstance(exc, InvalidStream):
+        return {
+            "category": "provider-protocol",
+            "code": "invalid-normalized-stream",
+            "source": "application",
+            "description": "the Provider emitted an illegal normalized stream",
+            "retryable": False,
+            "required_user_action": "inspect the Provider contract",
         }
     return {
         "category": "agent",
+        "code": "agent-error",
         "source": "application",
         "description": f"{type(exc).__name__}: {str(exc)[:200]}",
+        "retryable": False,
+        "required_user_action": "inspect the diagnostic error ID",
     }

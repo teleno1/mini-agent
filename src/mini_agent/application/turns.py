@@ -21,9 +21,9 @@ from mini_agent.application.ports import (
 from mini_agent.configuration import ConfigurationResolver, EffectiveConfiguration
 from mini_agent.context import ContextFrame
 from mini_agent.domain.messages import AssistantMessage, Message, UserMessage
-from mini_agent.domain.sessions import SessionEvent, SessionEventType
-from mini_agent.domain.streams import Failure, StreamEvent
-from mini_agent.domain.turns import close_text_response
+from mini_agent.domain.sessions import JSONValue, SessionEvent, SessionEventType
+from mini_agent.domain.streams import StreamEvent
+from mini_agent.domain.turns import InvalidStream, StreamFailed, close_text_response
 
 
 @dataclass(frozen=True, slots=True)
@@ -290,7 +290,7 @@ class TextTurnApplication:
         turn_id: str,
         request_started: SessionEvent | None,
         request_completed: bool,
-        cause: dict[str, str],
+        cause: dict[str, JSONValue],
     ) -> None:
         # Session persistence itself is the safety boundary.  If it is already
         # broken, the original exception remains the one reported to callers.
@@ -317,20 +317,34 @@ class TextTurnApplication:
             return
 
 
-def _failure_payload(exc: BaseException) -> dict[str, str]:
-    if hasattr(exc, "event"):
-        event = getattr(exc, "event")
-        failure = getattr(event, "failure", None)
-        if isinstance(failure, Failure):
-            return {
-                "category": failure.category,
-                "source": failure.source,
-                "description": failure.redacted_description,
-            }
+def _failure_payload(exc: BaseException) -> dict[str, JSONValue]:
+    if isinstance(exc, StreamFailed):
+        failure = exc.event.failure
+        return {
+            "category": failure.category,
+            "code": failure.code,
+            "source": failure.source,
+            "description": failure.redacted_description,
+            "retryable": failure.retryable,
+            "required_user_action": failure.required_user_action,
+            "cause": failure.cause,
+        }
+    if isinstance(exc, InvalidStream):
+        return {
+            "category": "provider-protocol",
+            "code": "invalid-normalized-stream",
+            "source": "application",
+            "description": "the Provider emitted an illegal normalized stream",
+            "retryable": False,
+            "required_user_action": "inspect the Provider contract",
+        }
     return {
         "category": "provider",
+        "code": "provider-error",
         "source": "application",
         "description": f"{type(exc).__name__}: {str(exc)[:200]}",
+        "retryable": False,
+        "required_user_action": "inspect the diagnostic error ID",
     }
 
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
 import typer
 from rich.console import Console
@@ -16,10 +16,17 @@ from mini_agent import __version__
 from mini_agent.adapters.clocks import SystemClock
 from mini_agent.adapters.ids import UUIDIdGenerator
 from mini_agent.adapters.session_store import SessionStore
+from mini_agent.application.ports import ContextBuilder as ContextBuilderPort
+from mini_agent.application.rendering import BoundedStreamRenderer
 from mini_agent.application.turns import TextTurnApplication
-from mini_agent.configuration import ConfigurationError, ConfigurationResolver, initialize_project
-from mini_agent.domain.streams import TextDelta
+from mini_agent.configuration import (
+    ConfigurationError,
+    ConfigurationResolver,
+    initialize_project,
+)
+from mini_agent.context import ContextBuilder
 from mini_agent.providers.fake import ScriptedFakeModelProvider
+from mini_agent.providers.openai_compatible import OpenAICompatibleModelProvider
 
 
 class _DefaultTaskGroup(typer_core.TyperGroup):
@@ -54,28 +61,54 @@ def _version_callback(value: bool) -> None:
         raise typer.Exit()
 
 
-async def _run_fake_turn(task: str, store: SessionStore, session_id: str | None = None) -> None:
+async def _run_turn(
+    task: str,
+    workspace: Path,
+    store: SessionStore,
+    session_id: str | None = None,
+    *,
+    cli_values: dict[str, object] | None = None,
+) -> None:
     ids = UUIDIdGenerator()
+    resolver = ConfigurationResolver(workspace, cli_values=cli_values)
+    configuration = resolver.resolve()
+    provider: OpenAICompatibleModelProvider | ScriptedFakeModelProvider
+    if configuration.api_key:
+        provider = OpenAICompatibleModelProvider.from_configuration(configuration)
+        context_builder: ContextBuilderPort | None = cast(
+            ContextBuilderPort, ContextBuilder(str(workspace), configuration)
+        )
+    else:
+        provider = ScriptedFakeModelProvider()
+        context_builder = None
     application = TextTurnApplication(
-        provider=ScriptedFakeModelProvider(),
+        provider=provider,
         clock=SystemClock(),
         id_generator=ids,
         session_store=store,
+        context_builder=context_builder,
+        configuration=configuration,
+        configuration_resolver=resolver,
     )
 
     console.print(f"You: {task}", markup=False, highlight=False)
     console.print("Agent: ", end="", markup=False, highlight=False)
+    renderer = BoundedStreamRenderer(
+        rich_sink=lambda text: console.print(text, end="", markup=False, highlight=False),
+        plain_sink=lambda text: typer.echo(text, nl=False),
+        max_queue_size=64,
+    )
+    try:
+        await application.run(task, on_event=renderer.observe, session_id=session_id)
+    finally:
+        await renderer.finish()
+        console.print()
+        if isinstance(provider, OpenAICompatibleModelProvider):
+            await provider.aclose()
 
-    async def render(event: object) -> None:
-        if isinstance(event, TextDelta):
-            console.print(event.text, end="", markup=False, highlight=False)
 
-    await application.run(task, on_event=render, session_id=session_id)
-    console.print()
-
-
-def _store_for_current_workspace() -> SessionStore:
-    return SessionStore(Path.cwd())
+def _store_for_current_workspace(workspace: Path | None = None) -> SessionStore:
+    return SessionStore(workspace or Path.cwd())
 
 
 @app.command("init")
@@ -137,7 +170,7 @@ def resume_session(
 
     if task is None:
         task = typer.prompt("You")
-    asyncio.run(_run_fake_turn(task, _store_for_current_workspace(), session_id))
+    asyncio.run(_run_turn(task, Path.cwd(), _store_for_current_workspace(), session_id))
 
 
 @app.command("run", hidden=True)
@@ -148,12 +181,25 @@ def run_task(
 ) -> None:
     """Run the default conversational task command."""
 
-    asyncio.run(_run_fake_turn(" ".join(task), _store_for_current_workspace()))
+    asyncio.run(_run_turn(" ".join(task), Path.cwd(), _store_for_current_workspace()))
 
 
 @app.callback(invoke_without_command=True)
 def _callback(
     context: typer.Context,
+    workspace: Annotated[
+        Path | None,
+        typer.Option("--workspace", help="Workspace root for the Session and instructions."),
+    ] = None,
+    model: Annotated[str | None, typer.Option("--model", help="Provider model override.")] = None,
+    base_url: Annotated[
+        str | None,
+        typer.Option("--base-url", help="OpenAI-compatible Provider Base URL override."),
+    ] = None,
+    permission_mode: Annotated[
+        str | None,
+        typer.Option("--permission-mode", help="Permission mode override."),
+    ] = None,
     version: Annotated[
         bool | None,
         typer.Option(
@@ -169,7 +215,17 @@ def _callback(
     task = " ".join(context.args) if context.args else None
     if task is None:
         task = typer.prompt("You")
-    asyncio.run(_run_fake_turn(task, _store_for_current_workspace()))
+    root = (workspace or Path.cwd()).resolve()
+    cli_values: dict[str, object] = {
+        key: value
+        for key, value in {
+            "model": model,
+            "provider_base_url": base_url,
+            "permission_mode": permission_mode,
+        }.items()
+        if value is not None
+    }
+    asyncio.run(_run_turn(task, root, _store_for_current_workspace(root), cli_values=cli_values))
 
 
 def main() -> None:
