@@ -25,9 +25,7 @@ from mini_agent.providers.fake import ScriptedFakeModelProvider
 class _DefaultTaskGroup(typer_core.TyperGroup):
     """Treat an unknown first token as the legacy default task command."""
 
-    def resolve_command(
-        self, ctx: Any, args: list[str]
-    ) -> tuple[str | None, Any, list[str]]:
+    def resolve_command(self, ctx: Any, args: list[str]) -> tuple[str | None, Any, list[str]]:
         try:
             return super().resolve_command(ctx, args)
         except UsageError:

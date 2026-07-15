@@ -30,10 +30,15 @@ class ScriptedFakeModelProvider:
         *,
         request_id: str = "fake-request-0001",
         usage: UsageReported | None = None,
+        responses: Sequence[Sequence[StreamEvent]] | None = None,
+        scripts: Sequence[Sequence[StreamEvent]] | None = None,
     ) -> None:
+        if responses is not None and scripts is not None:
+            raise ValueError("provide responses or scripts, not both")
         self._chunks = tuple(chunks)
         self._request_id = request_id
         self._usage = usage or UsageReported(input_tokens=1, output_tokens=len(self._chunks))
+        self._responses = tuple(tuple(response) for response in (responses or scripts or ()))
         self.requests: list[tuple[Message, ...] | ContextFrame] = []
 
     def stream(self, messages: Sequence[Message] | ContextFrame) -> AsyncIterator[StreamEvent]:
@@ -43,6 +48,12 @@ class ScriptedFakeModelProvider:
         self, messages: tuple[Message, ...] | ContextFrame
     ) -> AsyncIterator[StreamEvent]:
         self.requests.append(messages)
+        if self._responses:
+            response = self._responses[min(len(self.requests) - 1, len(self._responses) - 1)]
+            for event in response:
+                await asyncio.sleep(0)
+                yield event
+            return
         yield ResponseStarted(request_id=self._request_id)
         for chunk in self._chunks:
             await asyncio.sleep(0)

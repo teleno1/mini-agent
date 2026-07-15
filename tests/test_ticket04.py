@@ -23,7 +23,7 @@ from mini_agent.configuration import (
     initialize_project,
 )
 from mini_agent.context import ContextBuilder, ContextLayerName
-from mini_agent.domain.messages import AssistantMessage, UserMessage
+from mini_agent.domain.messages import AssistantMessage, ToolResultMessage, UserMessage
 from mini_agent.instructions import (
     InstructionBoundaryError,
     InstructionConflictError,
@@ -287,7 +287,11 @@ def test_context_frame_authority_order_manifest_and_budget(tmp_path: Path) -> No
         request_id="request-04",
         session_id="session-04",
         targets=["src/module.py"],
-        history=(UserMessage("past question"), AssistantMessage("past answer")),
+        history=(
+            UserMessage("past question"),
+            AssistantMessage("past answer"),
+            ToolResultMessage("call-1", "file contents", "success"),
+        ),
         summary={"objective": "test"},
         plan={"steps": ["verify"]},
         recovery={"status": "none"},
@@ -316,7 +320,11 @@ def test_context_frame_authority_order_manifest_and_budget(tmp_path: Path) -> No
     history_messages = [
         message for message in frame.messages if message.layer is ContextLayerName.HISTORY
     ]
-    assert [message.role for message in history_messages[:2]] == ["user", "assistant"]
+    assert [message.role for message in history_messages[:3]] == [
+        "user",
+        "assistant",
+        "tool",
+    ]
     assert frame.manifest.summary_boundary == 7
     assert frame.manifest.included_event_range == (8, 11)
     manifest = frame.manifest.as_dict()

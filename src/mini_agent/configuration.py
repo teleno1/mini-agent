@@ -232,9 +232,7 @@ class EffectiveConfiguration:
         result["api_key"] = "<redacted>" if self.api_key else None
         result["api_key_present"] = self.api_key_present
         if include_provenance:
-            result["provenance"] = {
-                key: value.as_dict() for key, value in self.provenance.items()
-            }
+            result["provenance"] = {key: value.as_dict() for key, value in self.provenance.items()}
         return result
 
     def configuration_hash(self) -> str:
@@ -243,9 +241,7 @@ class EffectiveConfiguration:
         return _sha256_json(
             {
                 "values": self.non_secret_values(),
-                "provenance": {
-                    key: value.as_dict() for key, value in self.provenance.items()
-                },
+                "provenance": {key: value.as_dict() for key, value in self.provenance.items()},
             }
         )
 
