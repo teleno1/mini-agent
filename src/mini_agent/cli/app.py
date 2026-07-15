@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -16,6 +17,7 @@ from mini_agent.adapters.clocks import SystemClock
 from mini_agent.adapters.ids import UUIDIdGenerator
 from mini_agent.adapters.session_store import SessionStore
 from mini_agent.application.turns import TextTurnApplication
+from mini_agent.configuration import ConfigurationError, ConfigurationResolver, initialize_project
 from mini_agent.domain.streams import TextDelta
 from mini_agent.providers.fake import ScriptedFakeModelProvider
 
@@ -43,6 +45,8 @@ app = typer.Typer(
     context_settings={"allow_extra_args": True},
     help="An independent, educational terminal coding agent.",
 )
+config_app = typer.Typer(add_completion=False, help="Inspect effective configuration.")
+app.add_typer(config_app, name="config")
 console = Console(markup=False, highlight=False, color_system=None)
 
 
@@ -74,6 +78,43 @@ async def _run_fake_turn(task: str, store: SessionStore, session_id: str | None 
 
 def _store_for_current_workspace() -> SessionStore:
     return SessionStore(Path.cwd())
+
+
+@app.command("init")
+def initialize(
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", help="Confirm creation of project configuration and ignore rules."),
+    ] = False,
+) -> None:
+    """Initialize safe project defaults without ever writing a credential."""
+
+    confirmed = yes or typer.confirm(
+        "Create .mini-agent/config.toml and update .gitignore?", default=False
+    )
+    if not confirmed:
+        typer.echo("Initialization cancelled.")
+        return
+    try:
+        config_path, ignore_path = initialize_project(Path.cwd(), confirmed=True)
+    except (ConfigurationError, OSError) as exc:
+        typer.echo(f"Initialization failed: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    typer.echo(f"Created {config_path}")
+    if ignore_path is not None:
+        typer.echo(f"Updated {ignore_path}")
+
+
+@config_app.command("show")
+def show_config() -> None:
+    """Show effective values and their winning, non-secret sources."""
+
+    try:
+        configuration = ConfigurationResolver(Path.cwd()).resolve()
+    except ConfigurationError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
+    typer.echo(json.dumps(configuration.as_dict(), ensure_ascii=False, indent=2, sort_keys=True))
 
 
 @app.command("sessions")

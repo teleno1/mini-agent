@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Sequence
 
+from mini_agent.context import ContextFrame
 from mini_agent.domain.messages import Message
 from mini_agent.domain.streams import (
     ResponseCompleted,
@@ -33,12 +34,14 @@ class ScriptedFakeModelProvider:
         self._chunks = tuple(chunks)
         self._request_id = request_id
         self._usage = usage or UsageReported(input_tokens=1, output_tokens=len(self._chunks))
-        self.requests: list[tuple[Message, ...]] = []
+        self.requests: list[tuple[Message, ...] | ContextFrame] = []
 
-    def stream(self, messages: Sequence[Message]) -> AsyncIterator[StreamEvent]:
-        return self._stream(tuple(messages))
+    def stream(self, messages: Sequence[Message] | ContextFrame) -> AsyncIterator[StreamEvent]:
+        return self._stream(messages if isinstance(messages, ContextFrame) else tuple(messages))
 
-    async def _stream(self, messages: tuple[Message, ...]) -> AsyncIterator[StreamEvent]:
+    async def _stream(
+        self, messages: tuple[Message, ...] | ContextFrame
+    ) -> AsyncIterator[StreamEvent]:
         self.requests.append(messages)
         yield ResponseStarted(request_id=self._request_id)
         for chunk in self._chunks:
