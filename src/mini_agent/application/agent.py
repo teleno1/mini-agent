@@ -32,8 +32,16 @@ from mini_agent.configuration import (
     PermissionMode,
     redact_secrets,
 )
-from mini_agent.context import ContextBuilder, ContextFrame
+from mini_agent.context import ContextBudgetError, ContextBuilder, ContextFrame
 from mini_agent.domain.artifacts import ARTIFACT_MEDIA_TYPE, ARTIFACT_PREVIEW_BYTES
+from mini_agent.domain.compaction import (
+    ContextCompactionError,
+    ContextCompactor,
+    ContextSummary,
+    TokenEstimator,
+    messages_after_boundary,
+    response_reserve_tokens,
+)
 from mini_agent.domain.messages import AssistantMessage, Message, ToolResultMessage, UserMessage
 from mini_agent.domain.plans import PlanSnapshot, PlanStep, PlanStepStatus
 from mini_agent.domain.reports import CompletionReport
@@ -154,6 +162,7 @@ class AgentTurnApplication:
         permission_gate: PermissionGate | None = None,
         user_interaction: UserInteraction | None = None,
         budgets: TurnBudgets | None = None,
+        context_compactor: ContextCompactor | None = None,
         retry_sleep: Callable[[float], Awaitable[object]] = asyncio.sleep,
     ) -> None:
         self._provider = provider
@@ -172,6 +181,8 @@ class AgentTurnApplication:
             interaction=user_interaction,
         )
         self._budgets = budgets
+        self._token_estimator = TokenEstimator()
+        self._context_compactor = context_compactor or ContextCompactor(self._token_estimator)
         self._active_sessions: set[str] = set()
         self._active_sessions_lock = threading.Lock()
         self._retry_sleep = retry_sleep
@@ -217,6 +228,9 @@ class AgentTurnApplication:
         writer: SessionWriter | None = None
         resumed: ResumedSession | None = None
         history: tuple[Message, ...] = ()
+        context_history: tuple[Message, ...] = ()
+        context_summary: ContextSummary | None = None
+        summary_boundary = 0
         conversation: tuple[Message, ...]
         all_stream_events: list[StreamEvent] = []
         tool_messages: list[ToolResultMessage] = []
@@ -234,7 +248,13 @@ class AgentTurnApplication:
             if self._session_store is not None:
                 if requested_session_id is not None:
                     resumed = self._session_store.resume(resolved_session_id)
-                    history = resumed.messages
+                    context_summary = getattr(resumed, "context_summary", None)
+                    summary_boundary = getattr(resumed, "summary_boundary", 0)
+                    history = (
+                        messages_after_boundary(resumed.events, summary_boundary)
+                        if context_summary is not None
+                        else resumed.messages
+                    )
                     writer = self._session_store.open_writer(resolved_session_id)
                 else:
                     writer = self._session_store.create(
@@ -263,6 +283,7 @@ class AgentTurnApplication:
             else:
                 user_event = None
             conversation = (*history, user_message)
+            context_history = history
             budgets = self._turn_budgets(effective_configuration)
         except BaseException as exc:
             if writer is not None:
@@ -297,14 +318,18 @@ class AgentTurnApplication:
                 self._ensure_active_budget(started_at, budgets.max_active_seconds)
                 request_count += 1
                 request_id = self._id_generator.new_id("request")
-                frame = self._build_frame(
+                frame, context_history, context_summary, summary_boundary = self._build_frame(
                     task,
                     request_id=request_id,
                     resolved_session_id=resolved_session_id,
-                    history=_history_without_current_user(conversation, history, user_message),
+                    history=tuple(
+                        message for message in context_history if message is not user_message
+                    ),
                     configuration=effective_configuration,
                     writer=writer,
                     plan=plan,
+                    context_summary=context_summary,
+                    summary_boundary=summary_boundary,
                 )
                 if writer is not None:
                     causation_id = user_event.event_id if user_event is not None else None
@@ -369,6 +394,10 @@ class AgentTurnApplication:
 
                 input_tokens += response.usage.input_tokens
                 output_tokens += response.usage.output_tokens
+                if frame is not None:
+                    self._token_estimator.calibrate_with_usage(
+                        max(1, self._token_estimator.estimate_context(frame)), response.usage
+                    )
                 if writer is not None and request_event is not None:
                     completed_event = writer.append(
                         SessionEventType.MODEL_REQUEST_COMPLETED,
@@ -391,6 +420,7 @@ class AgentTurnApplication:
                 else:
                     assistant_event = None
                 conversation = (*conversation, response.message)
+                context_history = (*context_history, response.message)
 
                 if input_tokens + output_tokens > budgets.max_total_tokens:
                     raise AgentLimitError("token usage budget exhausted")
@@ -517,6 +547,7 @@ class AgentTurnApplication:
                     tool_messages.append(result_message)
                     tool_observations.append((call, result))
                     conversation = (*conversation, result_message)
+                    context_history = (*context_history, result_message)
                     if plan is not None:
                         plan = _advance_plan(plan, call.name, result, self._clock.now())
                         self._append_plan_event(
@@ -548,31 +579,185 @@ class AgentTurnApplication:
         configuration: EffectiveConfiguration | None,
         writer: SessionWriter | None,
         plan: PlanSnapshot | None,
-    ) -> ContextFrame | None:
+        context_summary: ContextSummary | None,
+        summary_boundary: int,
+    ) -> tuple[ContextFrame | None, tuple[Message, ...], ContextSummary | None, int]:
         if self._context_builder is None:
-            return None
-        selected_events: list[Mapping[str, object]] = []
-        if writer is not None:
-            selected_events = [
-                {"type": event.event_type, **_tool_event_summary(event)}
-                for event in writer.events
-                if event.event_type.startswith("tool.")
-            ]
-        return self._context_builder.build(
-            task,
-            request_id=request_id,
-            session_id=resolved_session_id,
-            targets=self._request_targets,
-            history=history,
-            configuration=configuration,
-            plan=plan.as_dict() if plan is not None else None,
-            tool_definitions=[
-                definition.model_dump(mode="json")
-                for definition in self._tool_registry.definitions()
-            ],
-            selected_events=selected_events,
-            included_event_range=(1, len(writer.events)) if writer is not None else None,
+            return None, history, context_summary, summary_boundary
+
+        working_history = tuple(history)
+        working_summary = context_summary
+        working_boundary = summary_boundary
+        last_error: ContextBudgetError | None = None
+        for attempt in range(1, 4):
+            selected_events = _selected_context_events(writer, working_boundary)
+            try:
+                frame = self._context_builder.build(
+                    task,
+                    request_id=request_id,
+                    session_id=resolved_session_id,
+                    targets=self._request_targets,
+                    history=working_history,
+                    configuration=configuration,
+                    summary=working_summary.as_dict() if working_summary is not None else None,
+                    summary_boundary=working_boundary,
+                    plan=plan.as_dict() if plan is not None else None,
+                    tool_definitions=[
+                        definition.model_dump(mode="json")
+                        for definition in self._tool_registry.definitions()
+                    ],
+                    selected_events=selected_events,
+                    included_event_range=(
+                        (working_boundary + 1, len(writer.events))
+                        if writer is not None and len(writer.events) > working_boundary
+                        else None
+                    ),
+                )
+                self._ensure_context_budget(frame, configuration)
+                return frame, working_history, working_summary, working_boundary
+            except ContextBudgetError as exc:
+                last_error = exc
+                if writer is not None:
+                    writer.append(
+                        SessionEventType.CONTEXT_COMPACTION_STARTED,
+                        {"attempt": attempt, "reason": "context-budget"},
+                        turn_id=self._active_turn_id(writer),
+                        timestamp=self._clock.now(),
+                    )
+                micro_history = self._context_compactor.micro_compact_history(working_history)
+                micro_events = self._context_compactor.micro_compact_events(
+                    selected_events,
+                    writer.events if writer is not None else (),
+                    working_boundary,
+                )
+                if micro_history != working_history or micro_events != tuple(selected_events):
+                    try:
+                        micro_frame = self._context_builder.build(
+                            task,
+                            request_id=request_id,
+                            session_id=resolved_session_id,
+                            targets=self._request_targets,
+                            history=micro_history,
+                            configuration=configuration,
+                            summary=(
+                                working_summary.as_dict() if working_summary is not None else None
+                            ),
+                            summary_boundary=working_boundary,
+                            plan=plan.as_dict() if plan is not None else None,
+                            tool_definitions=[
+                                definition.model_dump(mode="json")
+                                for definition in self._tool_registry.definitions()
+                            ],
+                            selected_events=micro_events,
+                            included_event_range=(
+                                (working_boundary + 1, len(writer.events))
+                                if writer is not None and len(writer.events) > working_boundary
+                                else None
+                            ),
+                        )
+                        self._ensure_context_budget(micro_frame, configuration)
+                    except ContextBudgetError:
+                        working_history = micro_history
+                    else:
+                        if writer is not None:
+                            writer.append(
+                                SessionEventType.CONTEXT_COMPACTION_COMPLETED,
+                                {
+                                    "kind": "micro",
+                                    "dropped_messages": len(history) - len(micro_history),
+                                },
+                                turn_id=self._active_turn_id(writer),
+                                timestamp=self._clock.now(),
+                            )
+                        return micro_frame, micro_history, working_summary, working_boundary
+
+                try:
+                    compaction = self._context_compactor.compact(
+                        task,
+                        working_history,
+                        events=writer.events if writer is not None else (),
+                        selected_events=micro_events,
+                        plan=plan,
+                        artifacts=(writer.projection.artifacts if writer is not None else ()),
+                        existing_summary=working_summary,
+                        summary_boundary=working_boundary,
+                    )
+                except (ContextCompactionError, ValueError) as compaction_error:
+                    if writer is not None:
+                        writer.append(
+                            SessionEventType.CONTEXT_COMPACTION_FAILED,
+                            {"attempt": attempt, "error": str(compaction_error)[:500]},
+                            turn_id=self._active_turn_id(writer),
+                            timestamp=self._clock.now(),
+                        )
+                    if attempt == 3:
+                        raise ContextCompactionError(
+                            "context remained oversized after three compaction attempts"
+                        ) from compaction_error
+                    continue
+
+                working_history = compaction.history
+                working_summary = compaction.summary
+                working_boundary = compaction.summary_boundary
+                if working_summary is None:
+                    raise ContextCompactionError("compactor returned no validated summary")
+                if writer is not None:
+                    writer.append(
+                        SessionEventType.CONTEXT_COMPACTION_COMPLETED,
+                        {
+                            "kind": "summary",
+                            "summary": cast(dict[str, JSONValue], working_summary.as_dict()),
+                            "summary_boundary": working_boundary,
+                        },
+                        turn_id=self._active_turn_id(writer),
+                        timestamp=self._clock.now(),
+                    )
+                if attempt == 3:
+                    if writer is not None:
+                        writer.append(
+                            SessionEventType.CONTEXT_COMPACTION_FAILED,
+                            {
+                                "attempt": attempt,
+                                "error": "summary still exceeds the context budget",
+                            },
+                            turn_id=self._active_turn_id(writer),
+                            timestamp=self._clock.now(),
+                        )
+                    raise ContextCompactionError(
+                        "context remained oversized after three compaction attempts"
+                    ) from last_error
+        raise ContextCompactionError("context compaction did not converge") from last_error
+
+    @staticmethod
+    def _active_turn_id(writer: SessionWriter) -> str | None:
+        for event in reversed(writer.events):
+            if event.turn_id is not None:
+                return event.turn_id
+        return None
+
+    def _ensure_context_budget(
+        self, frame: ContextFrame, configuration: EffectiveConfiguration | None
+    ) -> None:
+        window_value = frame.manifest.request_parameters.get("context_window_tokens")
+        window = configuration.context_window_tokens if configuration is not None else window_value
+        if isinstance(window, bool) or not isinstance(window, int):
+            return
+        configured_reserve = (
+            configuration.response_reserve_tokens
+            if configuration is not None
+            else frame.manifest.request_parameters.get("response_reserve_tokens")
         )
+        reserve = (
+            response_reserve_tokens(window, configured_reserve)
+            if isinstance(configured_reserve, int) and not isinstance(configured_reserve, bool)
+            else response_reserve_tokens(window)
+        )
+        estimated = self._token_estimator.estimate_context(frame)
+        if estimated > window - reserve:
+            raise ContextBudgetError(
+                f"Context Frame needs {estimated} calibrated tokens but only "
+                f"{window - reserve} remain after the response reserve"
+            )
 
     async def _execute_tool(
         self,
@@ -1294,11 +1479,30 @@ def _assistant_payload(message: AssistantMessage) -> dict[str, JSONValue]:
 
 
 def _tool_event_summary(event: SessionEvent) -> dict[str, object]:
-    return {
-        key: value
-        for key, value in event.payload.items()
-        if key in {"tool_call_id", "name", "outcome", "result_text"}
+    summary: dict[str, object] = {
+        "sequence": event.sequence,
+        "event_id": event.event_id,
     }
+    summary.update(
+        {
+            key: value
+            for key, value in event.payload.items()
+            if key in {"tool_call_id", "name", "outcome", "result_text", "arguments"}
+        }
+    )
+    return summary
+
+
+def _selected_context_events(
+    writer: SessionWriter | None, summary_boundary: int
+) -> tuple[dict[str, object], ...]:
+    if writer is None:
+        return ()
+    return tuple(
+        {"type": event.event_type, **_tool_event_summary(event)}
+        for event in writer.events
+        if event.event_type.startswith("tool.") and event.sequence > summary_boundary
+    )
 
 
 def _failure_payload(exc: BaseException) -> dict[str, JSONValue]:

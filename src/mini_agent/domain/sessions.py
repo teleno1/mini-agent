@@ -14,6 +14,7 @@ from enum import StrEnum
 from typing import cast
 
 from mini_agent.domain.artifacts import ArtifactReference
+from mini_agent.domain.compaction import ContextSummary, SummaryValidationError
 from mini_agent.domain.messages import (
     AssistantMessage,
     Message,
@@ -53,6 +54,10 @@ class SessionEventType(StrEnum):
     TOOL_INTERRUPTED = "tool.interrupted"
     ARTIFACT_WRITTEN = "artifact.written"
     ARTIFACT_CREATED = "artifact.written"
+    CONTEXT_COMPACTION_STARTED = "context.compaction.started"
+    CONTEXT_COMPACTION_COMPLETED = "context.compacted"
+    CONTEXT_COMPACTED = "context.compacted"
+    CONTEXT_COMPACTION_FAILED = "context.compaction.failed"
 
 
 class SessionStatus(StrEnum):
@@ -206,6 +211,8 @@ class SessionProjection:
     configuration_overrides: Mapping[str, JSONValue] = field(default_factory=dict)
     context_manifests: tuple[dict[str, JSONValue], ...] = ()
     artifacts: tuple[ArtifactReference, ...] = ()
+    context_summary: ContextSummary | None = None
+    summary_boundary: int = 0
 
     @property
     def current_turn(self) -> TurnProjection | None:
@@ -253,7 +260,10 @@ def rebuild_projection(events: tuple[SessionEvent, ...]) -> SessionProjection:
     status = SessionStatus.IDLE
     created_at = events[0].timestamp
 
-    for event in events:
+    context_summary: ContextSummary | None = None
+    summary_boundary = 0
+
+    for event_index, event in enumerate(events):
         if event.session_id != session_id:
             raise InvalidSessionEvents("all events must belong to one Session")
         try:
@@ -303,6 +313,35 @@ def rebuild_projection(events: tuple[SessionEvent, ...]) -> SessionProjection:
             if artifact.artifact_id in artifacts:
                 raise InvalidSessionEvents(f"Artifact {artifact.artifact_id!r} was written twice")
             artifacts[artifact.artifact_id] = artifact
+            continue
+
+        if event_type is SessionEventType.CONTEXT_COMPACTION_STARTED:
+            attempt = event.payload.get("attempt")
+            if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 1:
+                raise InvalidSessionEvents("context.compaction.started requires a positive attempt")
+            continue
+
+        if event_type is SessionEventType.CONTEXT_COMPACTION_FAILED:
+            if not isinstance(event.payload.get("error"), str):
+                raise InvalidSessionEvents("context.compaction.failed requires an error")
+            continue
+
+        if event_type is SessionEventType.CONTEXT_COMPACTION_COMPLETED:
+            raw_summary = event.payload.get("summary")
+            if raw_summary is None and event.payload.get("kind") == "micro":
+                continue
+            if not isinstance(raw_summary, dict):
+                raise InvalidSessionEvents("context.compacted requires a summary object")
+            try:
+                context_summary = ContextSummary.from_dict(
+                    raw_summary,
+                    events=events[:event_index],
+                    artifacts=artifacts,
+                    previous_boundary=summary_boundary,
+                )
+            except SummaryValidationError as exc:
+                raise InvalidSessionEvents(str(exc)) from exc
+            summary_boundary = context_summary.summary_boundary
             continue
 
         if event_type is SessionEventType.TURN_STARTED:
@@ -544,6 +583,8 @@ def rebuild_projection(events: tuple[SessionEvent, ...]) -> SessionProjection:
         ),
         context_manifests=tuple(context_manifests),
         artifacts=tuple(artifacts.values()),
+        context_summary=context_summary,
+        summary_boundary=summary_boundary,
     )
 
 

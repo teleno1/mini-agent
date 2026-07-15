@@ -8,8 +8,14 @@ from typing import Protocol
 
 from mini_agent.context import ContextFrame
 from mini_agent.domain.artifacts import ArtifactReference
+from mini_agent.domain.compaction import ContextSummary
 from mini_agent.domain.messages import Message
-from mini_agent.domain.sessions import JSONValue, SessionEvent, SessionEventType
+from mini_agent.domain.sessions import (
+    JSONValue,
+    SessionEvent,
+    SessionEventType,
+    SessionProjection,
+)
 from mini_agent.domain.streams import StreamEvent
 from mini_agent.tools.contracts import PermissionDecision, PermissionRequest
 
@@ -52,6 +58,10 @@ class SessionWriter(Protocol):
     def events(self) -> tuple[SessionEvent, ...]:
         """Events already durable in this writer."""
 
+    @property
+    def projection(self) -> SessionProjection:
+        """Current disposable projection after the latest durable event."""
+
     def append(
         self,
         event_type: str | SessionEventType,
@@ -85,6 +95,10 @@ class ResumedSession(Protocol):
         """Stable Session identity."""
 
     @property
+    def events(self) -> tuple[SessionEvent, ...]:
+        """Authoritative events used for boundary-aware context assembly."""
+
+    @property
     def messages(self) -> tuple[Message, ...]:
         """Complete durable messages in context order."""
 
@@ -95,6 +109,14 @@ class ResumedSession(Protocol):
     @property
     def context_manifests(self) -> tuple[dict[str, JSONValue], ...]:
         """Non-secret provenance records from previous model requests."""
+
+    @property
+    def context_summary(self) -> ContextSummary | None:
+        """Latest validated Context Summary, if this Session has one."""
+
+    @property
+    def summary_boundary(self) -> int:
+        """Event sequence covered by the latest validated summary."""
 
 
 class ContextBuilder(Protocol):

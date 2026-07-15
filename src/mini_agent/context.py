@@ -10,6 +10,14 @@ from enum import IntEnum, StrEnum
 from typing import Literal
 
 from mini_agent.configuration import ConfigurationResolver, EffectiveConfiguration
+from mini_agent.domain.compaction import (
+    ContextCompactionError,
+    ContextCompactor,
+    ContextSummary,
+    SummaryValidationError,
+    TokenEstimator,
+    response_reserve_tokens,
+)
 from mini_agent.domain.messages import AssistantMessage, Message, ToolResultMessage
 from mini_agent.domain.sessions import JSONValue
 from mini_agent.instructions import InstructionLoader, InstructionSet
@@ -269,7 +277,12 @@ class ContextBuilder:
                 ContextLayerName.TOOL_DEFINITIONS,
                 "system",
                 ContextAuthority.TOOL_DEFINITIONS,
-                _render_structured("Tool Definitions", tool_definitions),
+                (
+                    "Permission Policy (host-enforced): "
+                    f"{effective_configuration.permission_mode.value}; "
+                    "the host decides allow, ask, or deny.\n"
+                    + _render_structured("Tool Definitions", tool_definitions)
+                ),
                 "built-in Tool Registry",
             ),
             ContextLayer.create(
@@ -313,10 +326,11 @@ class ContextBuilder:
             )
         )
 
-        budget = (
-            effective_configuration.context_window_tokens
-            - effective_configuration.response_reserve_tokens
+        reserved_response_tokens = response_reserve_tokens(
+            effective_configuration.context_window_tokens,
+            effective_configuration.response_reserve_tokens,
         )
+        budget = effective_configuration.context_window_tokens - reserved_response_tokens
         token_estimate = sum(layer.token_estimate for layer in layers)
         if token_estimate > budget:
             raise ContextBudgetError(
@@ -334,6 +348,7 @@ class ContextBuilder:
                 "permission_mode": effective_configuration.permission_mode.value,
                 "context_window_tokens": effective_configuration.context_window_tokens,
                 "response_reserve_tokens": effective_configuration.response_reserve_tokens,
+                "effective_response_reserve_tokens": reserved_response_tokens,
             },
             summary_boundary=summary_boundary,
             included_event_range=included_event_range,
@@ -489,3 +504,21 @@ def _json_object(value: Mapping[str, object]) -> dict[str, JSONValue]:
     if not isinstance(decoded, dict):
         raise ValueError("Tool definition must be a JSON object")
     return decoded
+
+
+__all__ = [
+    "CORE_BEHAVIOR",
+    "CORE_SAFETY_POLICY",
+    "ContextAuthority",
+    "ContextBudgetError",
+    "ContextCompactionError",
+    "ContextCompactor",
+    "ContextFrame",
+    "ContextLayer",
+    "ContextLayerName",
+    "ContextManifest",
+    "ContextMessage",
+    "ContextSummary",
+    "SummaryValidationError",
+    "TokenEstimator",
+]

@@ -23,6 +23,7 @@ from mini_agent.adapters.clocks import SystemClock
 from mini_agent.adapters.ids import UUIDIdGenerator
 from mini_agent.application.ports import Clock, IDGenerator
 from mini_agent.domain.artifacts import ArtifactReference
+from mini_agent.domain.compaction import ContextSummary
 from mini_agent.domain.messages import Message
 from mini_agent.domain.sessions import (
     CURRENT_SCHEMA_VERSION,
@@ -205,6 +206,14 @@ class ResumedSession:
     @property
     def context_manifests(self) -> tuple[dict[str, JSONValue], ...]:
         return self.projection.context_manifests
+
+    @property
+    def context_summary(self) -> ContextSummary | None:
+        return self.projection.context_summary
+
+    @property
+    def summary_boundary(self) -> int:
+        return self.projection.summary_boundary
 
 
 class _SessionLock:
