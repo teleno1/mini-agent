@@ -8,6 +8,14 @@ scripted Fake Model Provider:
 mini-agent "Explain Mini Agent"
 ```
 
+Each turn is stored as UTF-8 JSONL under `.mini-agent/sessions`. List and
+continue completed text-only Sessions with:
+
+```console
+mini-agent sessions
+mini-agent resume SESSION_ID "Continue the task"
+```
+
 It is an independent educational project. It is not Claude Code, is not
 Anthropic software, and does not promise Claude Code compatibility.
 
@@ -45,4 +53,5 @@ package metadata and can be installed without a source checkout.
 
 The runtime dependencies are intentionally limited to Typer, Rich, Pydantic,
 and httpx. No API key or Git repository is needed for the offline Fake
-Provider journey.
+Provider journey. Session history is authoritative in `events.jsonl`; listing
+metadata is rebuilt from that history.

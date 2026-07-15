@@ -1,0 +1,43 @@
+"""Public compatibility surface for the filesystem Session adapter."""
+
+from mini_agent.adapters.session_store import (
+    JSONLSessionStore,
+    JsonlSessionStore,
+    LockEvidence,
+    PartialTailWarning,
+    ResumedSession,
+    SessionAlreadyExistsError,
+    SessionCorruptionError,
+    SessionEventStore,
+    SessionLockError,
+    SessionMetadata,
+    SessionNotFoundError,
+    SessionNotResumableError,
+    SessionPersistenceError,
+    SessionReadOnlyError,
+    SessionSnapshot,
+    SessionStore,
+    SessionStoreError,
+    SessionWriter,
+)
+
+__all__ = [
+    "JSONLSessionStore",
+    "JsonlSessionStore",
+    "LockEvidence",
+    "PartialTailWarning",
+    "ResumedSession",
+    "SessionAlreadyExistsError",
+    "SessionCorruptionError",
+    "SessionEventStore",
+    "SessionLockError",
+    "SessionMetadata",
+    "SessionNotFoundError",
+    "SessionNotResumableError",
+    "SessionPersistenceError",
+    "SessionReadOnlyError",
+    "SessionSnapshot",
+    "SessionStore",
+    "SessionStoreError",
+    "SessionWriter",
+]

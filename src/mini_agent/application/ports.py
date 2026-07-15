@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from datetime import datetime
 from typing import Protocol
 
 from mini_agent.domain.messages import Message
+from mini_agent.domain.sessions import JSONValue, SessionEvent, SessionEventType
 from mini_agent.domain.streams import StreamEvent
 
 
@@ -32,3 +33,52 @@ class IDGenerator(Protocol):
 
 
 type EventObserver = Callable[[StreamEvent], Awaitable[None] | None]
+
+
+class SessionWriter(Protocol):
+    """The durable-before-side-effect seam used by the Turn application."""
+
+    def append(
+        self,
+        event_type: str | SessionEventType,
+        payload: Mapping[str, JSONValue],
+        *,
+        turn_id: str | None = None,
+        causation_id: str | None = None,
+        timestamp: datetime | None = None,
+        event_id: str | None = None,
+    ) -> SessionEvent:
+        """Append one event and return its durable identity."""
+
+    def close(self) -> None:
+        """Release the exclusive Session writer."""
+
+
+class ResumedSession(Protocol):
+    """Rebuilt durable state used to assemble the next provider request."""
+
+    @property
+    def session_id(self) -> str:
+        """Stable Session identity."""
+
+    @property
+    def messages(self) -> tuple[Message, ...]:
+        """Complete durable messages in context order."""
+
+
+class SessionStore(Protocol):
+    """Persistence boundary for text-only Session lifecycle events."""
+
+    def create(
+        self,
+        session_id: str | None = None,
+        *,
+        created_at: datetime | None = None,
+    ) -> SessionWriter:
+        """Create a Session and record its root event."""
+
+    def open_writer(self, session_id: str) -> SessionWriter:
+        """Open the one exclusive writer for an existing Session."""
+
+    def resume(self, session_id: str) -> ResumedSession:
+        """Rebuild a Session from its event history."""

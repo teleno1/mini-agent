@@ -36,3 +36,19 @@ def test_cli_renders_user_markup_as_literal_text() -> None:
 
     assert result.exit_code == 0
     assert "You: Show [bold]literal[/bold] text" in result.stdout
+
+
+def test_cli_lists_and_resumes_a_durable_session(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    first = runner.invoke(app, ["remember this"])
+    assert first.exit_code == 0
+
+    listing = runner.invoke(app, ["sessions"])
+    assert listing.exit_code == 0
+    session_id = listing.stdout.splitlines()[0].split("\t", maxsplit=1)[0]
+
+    resumed = runner.invoke(app, ["resume", session_id, "continue this"])
+
+    assert resumed.exit_code == 0
+    assert "Agent: Mini Agent is a small, inspectable coding agent." in resumed.stdout

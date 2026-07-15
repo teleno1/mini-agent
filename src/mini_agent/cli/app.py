@@ -3,22 +3,44 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
-from typing import Annotated
+from pathlib import Path
+from typing import Annotated, Any
 
 import typer
 from rich.console import Console
+from typer import core as typer_core
+from typer._click.exceptions import UsageError
 
 from mini_agent import __version__
-from mini_agent.adapters.clocks import DeterministicClock
-from mini_agent.adapters.ids import DeterministicIdGenerator
+from mini_agent.adapters.clocks import SystemClock
+from mini_agent.adapters.ids import UUIDIdGenerator
+from mini_agent.adapters.session_store import SessionStore
 from mini_agent.application.turns import TextTurnApplication
 from mini_agent.domain.streams import TextDelta
 from mini_agent.providers.fake import ScriptedFakeModelProvider
 
+
+class _DefaultTaskGroup(typer_core.TyperGroup):
+    """Treat an unknown first token as the legacy default task command."""
+
+    def resolve_command(
+        self, ctx: Any, args: list[str]
+    ) -> tuple[str | None, Any, list[str]]:
+        try:
+            return super().resolve_command(ctx, args)
+        except UsageError:
+            if args and not args[0].startswith("-"):
+                command = self.get_command(ctx, "run")
+                if command is not None:
+                    return "run", command, args
+            raise
+
+
 app = typer.Typer(
+    cls=_DefaultTaskGroup,
     add_completion=False,
     no_args_is_help=False,
+    context_settings={"allow_extra_args": True},
     help="An independent, educational terminal coding agent.",
 )
 console = Console(markup=False, highlight=False, color_system=None)
@@ -30,11 +52,13 @@ def _version_callback(value: bool) -> None:
         raise typer.Exit()
 
 
-async def _run_fake_turn(task: str) -> None:
+async def _run_fake_turn(task: str, store: SessionStore, session_id: str | None = None) -> None:
+    ids = UUIDIdGenerator()
     application = TextTurnApplication(
         provider=ScriptedFakeModelProvider(),
-        clock=DeterministicClock(datetime(2026, 1, 1, tzinfo=UTC)),
-        id_generator=DeterministicIdGenerator(),
+        clock=SystemClock(),
+        id_generator=ids,
+        session_store=store,
     )
 
     console.print(f"You: {task}", markup=False, highlight=False)
@@ -44,15 +68,53 @@ async def _run_fake_turn(task: str) -> None:
         if isinstance(event, TextDelta):
             console.print(event.text, end="", markup=False, highlight=False)
 
-    await application.run(task, on_event=render)
+    await application.run(task, on_event=render, session_id=session_id)
     console.print()
+
+
+def _store_for_current_workspace() -> SessionStore:
+    return SessionStore(Path.cwd())
+
+
+@app.command("sessions")
+def list_sessions() -> None:
+    """List durable Sessions in the current Workspace."""
+
+    sessions = _store_for_current_workspace().list_sessions()
+    if not sessions:
+        typer.echo("No Sessions.")
+        return
+    for session in sessions:
+        preview = session.last_user_message or ""
+        typer.echo(f"{session.session_id}\t{session.status}\t{preview}")
+
+
+@app.command("resume")
+def resume_session(
+    session_id: Annotated[str, typer.Argument(help="The Session ID to resume.")],
+    task: Annotated[str | None, typer.Argument(help="The next task for the Session.")] = None,
+) -> None:
+    """Resume a completed text-only Session from its event history."""
+
+    if task is None:
+        task = typer.prompt("You")
+    asyncio.run(_run_fake_turn(task, _store_for_current_workspace(), session_id))
+
+
+@app.command("run", hidden=True)
+def run_task(
+    task: Annotated[
+        list[str], typer.Argument(help="The task to send to the offline Fake Provider.")
+    ],
+) -> None:
+    """Run the default conversational task command."""
+
+    asyncio.run(_run_fake_turn(" ".join(task), _store_for_current_workspace()))
 
 
 @app.callback(invoke_without_command=True)
 def _callback(
-    task: Annotated[
-        str | None, typer.Argument(help="The task to send to the offline Fake Provider.")
-    ] = None,
+    context: typer.Context,
     version: Annotated[
         bool | None,
         typer.Option(
@@ -63,9 +125,12 @@ def _callback(
         ),
     ] = None,
 ) -> None:
+    if context.invoked_subcommand is not None:
+        return
+    task = " ".join(context.args) if context.args else None
     if task is None:
         task = typer.prompt("You")
-    asyncio.run(_run_fake_turn(task))
+    asyncio.run(_run_fake_turn(task, _store_for_current_workspace()))
 
 
 def main() -> None:
