@@ -10,15 +10,13 @@ from mini_agent.context import ContextFrame
 from mini_agent.domain.messages import Message
 from mini_agent.domain.sessions import JSONValue, SessionEvent, SessionEventType
 from mini_agent.domain.streams import StreamEvent
-from mini_agent.tools.contracts import PermissionDecision, RiskAssessment
+from mini_agent.tools.contracts import PermissionDecision, ValidatedToolCall
 
 
 class ModelProvider(Protocol):
     """Boundary through which the Agent Loop receives model responses."""
 
-    def stream(
-        self, messages: Sequence[Message] | ContextFrame
-    ) -> AsyncIterator[StreamEvent]:
+    def stream(self, messages: Sequence[Message] | ContextFrame) -> AsyncIterator[StreamEvent]:
         """Stream normalized events for one provider request."""
 
 
@@ -39,8 +37,8 @@ class IDGenerator(Protocol):
 class PermissionGate(Protocol):
     """Host authorization boundary; Tools never prompt or grant themselves."""
 
-    def decide(self, risk: RiskAssessment) -> PermissionDecision:
-        """Return the host decision for immutable Tool risk metadata."""
+    def decide(self, call: ValidatedToolCall) -> PermissionDecision:
+        """Decide one immutable normalized Tool Call and its risk metadata."""
 
 
 type EventObserver = Callable[[StreamEvent], Awaitable[None] | None]

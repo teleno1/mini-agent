@@ -35,6 +35,22 @@ class WorkspacePathError(WorkspaceError):
         # accidental file contents out of denial details.
         super().__init__(messages.get(code, "Workspace target is denied"))
 
+    @property
+    def hard_denial(self) -> bool:
+        """Whether host policy must deny rather than report an execution failure."""
+
+        return self.code in {
+            "absolute",
+            "binary",
+            "device",
+            "drive",
+            "nul",
+            "outside",
+            "sensitive",
+            "traversal",
+            "unc",
+        }
+
 
 class SensitiveTargetError(WorkspacePathError):
     def __init__(self) -> None:

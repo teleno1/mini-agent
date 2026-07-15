@@ -35,6 +35,7 @@ from mini_agent.tools.contracts import (
     ToolRegistry,
     ToolResult,
     ToolValidationError,
+    ValidatedToolCall,
     invalid_result,
 )
 from mini_agent.tools.workspace import Workspace, WorkspacePathError
@@ -61,8 +62,8 @@ class AgentTurnResult:
 class ReadOnlyPermissionGate:
     """Automatically allow safe reads and deny other side-effect classes."""
 
-    def decide(self, risk: RiskAssessment) -> PermissionDecision:
-        if risk.side_effect.value == "read":
+    def decide(self, call: ValidatedToolCall) -> PermissionDecision:
+        if call.risk.side_effect.value == "read":
             return PermissionDecision.ALLOW
         return PermissionDecision.DENY
 
@@ -393,24 +394,38 @@ class AgentTurnApplication:
             return invalid_result(
                 call, code="invalid-input", message="Tool arguments are invalid"
             ), causation_id
+        call = validated.call.model_copy(deep=True)
         tool = self._tool_registry.require(call.name)
+        authorized_argument_hash = _argument_hash(call)
         preflight_failure: ToolResult | None = None
         preflight = getattr(tool, "preflight", None)
         try:
             if preflight is not None:
                 preflight(self._workspace, validated.arguments)
         except WorkspacePathError as exc:
-            preflight_failure = ToolResult.failed(
-                call,
-                category="tool-execution",
-                code=exc.code,
-                message=str(exc),
-            )
+            preflight_failure = _workspace_failure(call, exc)
         decision = (
             PermissionDecision.DENY
             if preflight_failure is not None
-            else self._permission_gate.decide(validated.risk)
+            else self._permission_gate.decide(validated)
         )
+        if preflight_failure is None and decision is PermissionDecision.ALLOW:
+            if _argument_hash(validated.call) != authorized_argument_hash:
+                preflight_failure = ToolResult.failed(
+                    call,
+                    outcome=ToolOutcome.DENIED,
+                    category="permission",
+                    code="arguments-changed",
+                    message="Tool arguments changed after authorization",
+                )
+                decision = PermissionDecision.DENY
+            else:
+                try:
+                    if preflight is not None:
+                        preflight(self._workspace, validated.arguments)
+                except WorkspacePathError as exc:
+                    preflight_failure = _workspace_failure(call, exc)
+                    decision = PermissionDecision.DENY
         decision_at = self._clock.now()
         validated_event = self._append_tool_event(
             writer,
@@ -428,6 +443,7 @@ class AgentTurnApplication:
                     matched_rule="workspace-confinement" if preflight_failure else None,
                     reason=preflight_failure.text if preflight_failure else None,
                     timestamp=decision_at,
+                    argument_hash=authorized_argument_hash,
                 ),
             },
             turn_id=turn_id,
@@ -601,13 +617,8 @@ def _permission_payload(
     matched_rule: str | None,
     reason: str | None,
     timestamp: datetime,
+    argument_hash: str,
 ) -> dict[str, JSONValue]:
-    arguments = json.dumps(
-        {"name": call.name, "arguments": call.arguments},
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
     allowed = decision is PermissionDecision.ALLOW
     return {
         "tool_call_id": call.tool_call_id,
@@ -623,9 +634,29 @@ def _permission_payload(
         ),
         "scope": "turn",
         "resource_summary": list(risk.resources),
-        "argument_hash": hashlib.sha256(arguments).hexdigest(),
+        "argument_hash": argument_hash,
         "timestamp": timestamp.isoformat(),
     }
+
+
+def _argument_hash(call: ToolCall) -> str:
+    arguments = json.dumps(
+        {"name": call.name, "arguments": call.arguments},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(arguments).hexdigest()
+
+
+def _workspace_failure(call: ToolCall, exc: WorkspacePathError) -> ToolResult:
+    return ToolResult.failed(
+        call,
+        outcome=ToolOutcome.DENIED if exc.hard_denial else ToolOutcome.FAILED,
+        category="permission" if exc.hard_denial else "tool-execution",
+        code=exc.code,
+        message=str(exc),
+    )
 
 
 def _assistant_payload(message: AssistantMessage) -> dict[str, JSONValue]:

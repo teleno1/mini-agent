@@ -27,6 +27,7 @@ from mini_agent.domain.streams import (
 )
 from mini_agent.providers.fake import ScriptedFakeModelProvider
 from mini_agent.tools.contracts import (
+    PermissionDecision,
     RiskAssessment,
     SideEffectCategory,
     ToolCall,
@@ -34,9 +35,10 @@ from mini_agent.tools.contracts import (
     ToolOutcome,
     ToolRegistry,
     ToolResult,
+    ValidatedToolCall,
 )
 from mini_agent.tools.files import ReadFileTool, SearchFilesTool
-from mini_agent.tools.workspace import Workspace
+from mini_agent.tools.workspace import Workspace, WorkspacePathError
 
 
 class _WriteInput(BaseModel):
@@ -91,6 +93,29 @@ class _InterruptProbeTool:
         self.started.set()
         await asyncio.Event().wait()
         raise AssertionError("the interrupted Tool should not return normally")
+
+
+class _MutatingPermissionGate:
+    """Exercise the host's defensive argument-hash recheck."""
+
+    def __init__(self) -> None:
+        self.calls: list[ValidatedToolCall] = []
+
+    def decide(self, call: ValidatedToolCall) -> PermissionDecision:
+        self.calls.append(call)
+        call.call.arguments["path"] = "changed-after-authorization.txt"
+        return PermissionDecision.ALLOW
+
+
+class _ChangingPreflightReadTool(ReadFileTool):
+    def __init__(self) -> None:
+        self.preflight_count = 0
+
+    def preflight(self, workspace: Workspace, arguments: BaseModel) -> None:
+        self.preflight_count += 1
+        if self.preflight_count == 2:
+            raise WorkspacePathError("outside")
+        super().preflight(workspace, arguments)
 
 
 def _provider_for_read(*, path: str, final_text: str) -> ScriptedFakeModelProvider:
@@ -241,13 +266,65 @@ async def test_fake_agent_returns_bounded_failure_and_model_receives_it(tmp_path
 
     assert result.assistant_message == AssistantMessage("I could not read it.")
     assert len(result.tool_results) == 1
-    assert result.tool_results[0].outcome == ToolOutcome.FAILED.value
+    assert result.tool_results[0].outcome == ToolOutcome.DENIED.value
     assert "outside.txt" not in result.tool_results[0].content
     assert "Workspace traversal" in result.tool_results[0].content
     assert isinstance(provider.requests[1][-1], ToolResultMessage)
-    assert provider.requests[1][-1].outcome == ToolOutcome.FAILED.value
+    assert provider.requests[1][-1].outcome == ToolOutcome.DENIED.value
     assert [event.event_type for event in snapshot.events].count(SessionEventType.TOOL_FAILED) == 1
     assert SessionEventType.TOOL_STARTED not in [event.event_type for event in snapshot.events]
+
+
+@pytest.mark.asyncio
+async def test_agent_rechecks_argument_hash_after_permission_decision(tmp_path: Path) -> None:
+    (tmp_path / "main.py").write_text("safe\n", encoding="utf-8")
+    provider = _provider_for_read(path="main.py", final_text="The changed call was denied.")
+    gate = _MutatingPermissionGate()
+    clock = DeterministicClock(datetime(2026, 1, 1, tzinfo=UTC))
+    ids = DeterministicIdGenerator()
+    store = SessionStore(tmp_path, clock=clock, id_generator=ids)
+    application = AgentTurnApplication(
+        provider=provider,
+        workspace=Workspace(tmp_path),
+        tool_registry=ToolRegistry([ReadFileTool()]),
+        clock=clock,
+        id_generator=ids,
+        session_store=store,
+        permission_gate=gate,
+    )
+
+    result = await application.run("read safely")
+    events = store.read(result.session_id).events
+
+    assert gate.calls[0].call.name == "read_file"
+    assert result.tool_results[0].outcome == ToolOutcome.DENIED.value
+    assert result.tool_results[0].content == "Tool arguments changed after authorization"
+    assert SessionEventType.TOOL_STARTED not in [event.event_type for event in events]
+
+
+@pytest.mark.asyncio
+async def test_agent_rechecks_workspace_path_immediately_before_start(tmp_path: Path) -> None:
+    (tmp_path / "main.py").write_text("safe\n", encoding="utf-8")
+    provider = _provider_for_read(path="main.py", final_text="The changed path was denied.")
+    tool = _ChangingPreflightReadTool()
+    clock = DeterministicClock(datetime(2026, 1, 1, tzinfo=UTC))
+    ids = DeterministicIdGenerator()
+    store = SessionStore(tmp_path, clock=clock, id_generator=ids)
+    application = AgentTurnApplication(
+        provider=provider,
+        workspace=Workspace(tmp_path),
+        tool_registry=ToolRegistry([tool]),
+        clock=clock,
+        id_generator=ids,
+        session_store=store,
+    )
+
+    result = await application.run("read safely")
+    events = store.read(result.session_id).events
+
+    assert tool.preflight_count == 2
+    assert result.tool_results[0].outcome == ToolOutcome.DENIED.value
+    assert SessionEventType.TOOL_STARTED not in [event.event_type for event in events]
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import subprocess
 from pathlib import Path
 
@@ -84,6 +85,45 @@ def test_workspace_allows_internal_link_but_rejects_external_link(tmp_path: Path
     assert "do not disclose" not in str(error.value)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction behavior")
+def test_workspace_confines_windows_directory_reparse_points(tmp_path: Path) -> None:
+    workspace = Workspace(tmp_path)
+    inside = tmp_path / "inside"
+    inside.mkdir()
+    (inside / "note.txt").write_text("inside", encoding="utf-8")
+    external = tmp_path.parent / f"outside-junction-{tmp_path.name}"
+    external.mkdir()
+    (external / "note.txt").write_text("outside", encoding="utf-8")
+    internal_link = tmp_path / "inside-junction"
+    external_link = tmp_path / "outside-junction"
+    try:
+        subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(internal_link), str(inside)],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(external_link), str(external)],
+            check=True,
+            capture_output=True,
+        )
+
+        assert (
+            workspace.resolve_read("inside-junction/note.txt").path
+            == (inside / "note.txt").resolve()
+        )
+        with pytest.raises(WorkspacePathError) as error:
+            workspace.resolve_read("outside-junction/note.txt")
+        assert error.value.code == "outside"
+    finally:
+        if internal_link.exists():
+            internal_link.rmdir()
+        if external_link.exists():
+            external_link.rmdir()
+        external.joinpath("note.txt").unlink(missing_ok=True)
+        external.rmdir()
+
+
 def test_workspace_denies_sensitive_and_binary_targets_but_allows_env_template(
     tmp_path: Path,
 ) -> None:
@@ -158,7 +198,7 @@ async def test_read_file_failure_is_bounded_and_does_not_reveal_sensitive_conten
 
     result = await ReadFileTool().execute(workspace, ReadFileInput(path=".env"))
 
-    assert result.outcome is ToolOutcome.FAILED
+    assert result.outcome is ToolOutcome.DENIED
     assert result.error is not None
     assert "TOP_SECRET" not in result.text
     assert "do-not-return" not in result.text
@@ -235,6 +275,9 @@ async def test_search_rg_is_direct_and_result_is_bounded(
     assert observed["shell"] is False
     assert observed["cwd"] == workspace.root
     assert "--" in observed["args"]
+    assert "--hidden" in observed["args"]
+    assert "!.git/**" in observed["args"]
+    assert "!.mini-agent/**" in observed["args"]
     assert result.data["match_count"] == 2
     assert result.data["truncated"] is True
 
@@ -279,6 +322,6 @@ async def test_search_rejects_outside_directory_without_disclosing_target(tmp_pa
         SearchFilesInput(query="needle", directory="../outside"),
     )
 
-    assert result.outcome is ToolOutcome.FAILED
+    assert result.outcome is ToolOutcome.DENIED
     assert result.error is not None
     assert "outside" not in result.text

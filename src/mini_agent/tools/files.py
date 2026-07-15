@@ -137,11 +137,13 @@ class _WorkspaceTool:
         message: str,
         *,
         category: str = "tool-execution",
+        outcome: ToolOutcome = ToolOutcome.FAILED,
     ) -> ToolResult:
         from mini_agent.tools.contracts import ToolCall
 
         return ToolResult.failed(
             ToolCall(tool_call_id=call_id, name=name, arguments={}),
+            outcome=outcome,
             category=category,
             code=code,
             message=message,
@@ -176,10 +178,22 @@ class ReadFileTool(_WorkspaceTool):
             return _read_range(target.relative_path, raw, request)
         except BinaryTargetError:
             return self._failure(
-                call_id, self.name, "binary", "binary Workspace content is not readable"
+                call_id,
+                self.name,
+                "binary",
+                "binary Workspace content is not readable",
+                category="permission",
+                outcome=ToolOutcome.DENIED,
             )
         except WorkspacePathError as exc:
-            return self._failure(call_id, self.name, exc.code, str(exc))
+            return self._failure(
+                call_id,
+                self.name,
+                exc.code,
+                str(exc),
+                category="permission" if exc.hard_denial else "tool-execution",
+                outcome=ToolOutcome.DENIED if exc.hard_denial else ToolOutcome.FAILED,
+            )
         except WorkspaceError:
             return self._failure(call_id, self.name, "read", "Workspace file could not be read")
         except UnicodeDecodeError:
@@ -217,7 +231,14 @@ class SearchFilesTool(_WorkspaceTool):
         try:
             target = workspace.resolve_read(request.directory, directory=True)
         except WorkspacePathError as exc:
-            return self._failure(call_id, self.name, exc.code, str(exc))
+            return self._failure(
+                call_id,
+                self.name,
+                exc.code,
+                str(exc),
+                category="permission" if exc.hard_denial else "tool-execution",
+                outcome=ToolOutcome.DENIED if exc.hard_denial else ToolOutcome.FAILED,
+            )
         try:
             if shutil.which("rg"):
                 matches = await asyncio.to_thread(
@@ -260,6 +281,7 @@ class SearchFilesTool(_WorkspaceTool):
         relative_root = root.relative_to(workspace.root).as_posix()
         args = [
             executable,
+            "--hidden",
             "--no-heading",
             "--line-number",
             "--column",
@@ -267,6 +289,10 @@ class SearchFilesTool(_WorkspaceTool):
             "never",
             "--max-count",
             str(request.max_matches),
+            "--glob",
+            "!.git/**",
+            "--glob",
+            "!.mini-agent/**",
         ]
         if not request.regex:
             args.append("--fixed-strings")

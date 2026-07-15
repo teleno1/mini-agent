@@ -278,9 +278,7 @@ class SessionWriter:
         self.events_path = directory / "events.jsonl"
         self._lock = lock
         self._events = list(events)
-        self._projection: SessionProjection | None = (
-            rebuild_projection(events) if events else None
-        )
+        self._projection: SessionProjection | None = rebuild_projection(events) if events else None
         self._closed = False
 
     @property

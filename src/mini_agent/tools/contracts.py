@@ -243,8 +243,13 @@ class ToolRegistry:
             arguments = tool.input_model.model_validate(call.arguments)
         except ValidationError as exc:
             raise ToolValidationError(f"invalid arguments for Tool {call.name}", call=call) from exc
+        normalized_call = ToolCall(
+            tool_call_id=call.tool_call_id,
+            name=call.name,
+            arguments=arguments.model_dump(mode="json"),
+        )
         risk = tool.assess(arguments)
-        return ValidatedToolCall(call=call, arguments=arguments, risk=risk)
+        return ValidatedToolCall(call=normalized_call, arguments=arguments, risk=risk)
 
     async def execute(self, workspace: Workspace, call: ToolCall) -> ToolResult:
         """Validate and execute one call, preserving its correlation ID."""
