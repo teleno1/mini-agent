@@ -239,6 +239,37 @@ async def test_search_rg_is_direct_and_result_is_bounded(
 
 
 @pytest.mark.asyncio
+async def test_search_rg_filters_sensitive_targets_before_returning_matches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = Workspace(tmp_path)
+    (tmp_path / ".env").write_text("API_KEY=needle\n", encoding="utf-8")
+    (tmp_path / "main.py").write_text("needle\n", encoding="utf-8")
+
+    def fake_run(args, *, cwd, check, capture_output, timeout, shell):
+        del cwd, check, capture_output, timeout, shell
+        return subprocess.CompletedProcess(
+            args,
+            0,
+            b".env:1:9:API_KEY=needle\nmain.py:1:1:needle\n",
+            b"",
+        )
+
+    monkeypatch.setattr("mini_agent.tools.files.shutil.which", lambda _: "rg")
+    monkeypatch.setattr("mini_agent.tools.files.subprocess.run", fake_run)
+
+    result = await SearchFilesTool().execute(
+        workspace,
+        SearchFilesInput(query="needle"),
+    )
+
+    assert result.data["matches"] == (
+        {"path": "main.py", "line": 1, "column": 1, "text": "needle"},
+    )
+    assert "API_KEY" not in result.text
+
+
+@pytest.mark.asyncio
 async def test_search_rejects_outside_directory_without_disclosing_target(tmp_path: Path) -> None:
     workspace = Workspace(tmp_path)
 

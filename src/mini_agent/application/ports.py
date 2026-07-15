@@ -10,6 +10,7 @@ from mini_agent.context import ContextFrame
 from mini_agent.domain.messages import Message
 from mini_agent.domain.sessions import JSONValue, SessionEvent, SessionEventType
 from mini_agent.domain.streams import StreamEvent
+from mini_agent.tools.contracts import PermissionDecision, RiskAssessment
 
 
 class ModelProvider(Protocol):
@@ -33,6 +34,13 @@ class IDGenerator(Protocol):
 
     def new_id(self, namespace: str) -> str:
         """Return a new identifier in the requested namespace."""
+
+
+class PermissionGate(Protocol):
+    """Host authorization boundary; Tools never prompt or grant themselves."""
+
+    def decide(self, risk: RiskAssessment) -> PermissionDecision:
+        """Return the host decision for immutable Tool risk metadata."""
 
 
 type EventObserver = Callable[[StreamEvent], Awaitable[None] | None]

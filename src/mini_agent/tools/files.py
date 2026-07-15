@@ -284,7 +284,7 @@ class SearchFilesTool(_WorkspaceTool):
         )
         if completed.returncode not in (0, 1):
             raise OSError("rg search failed")
-        return _parse_rg_output(completed.stdout, request)
+        return _parse_rg_output(completed.stdout, request, workspace)
 
     def _search_with_python(
         self, workspace: Workspace, root: Path, request: SearchFilesInput
@@ -452,7 +452,9 @@ def _literal_search(line: str, query: str, case_sensitive: bool) -> re.Match[str
     return re.search(re.escape(query), line, flags)
 
 
-def _parse_rg_output(raw: bytes, request: SearchFilesInput) -> _SearchResult:
+def _parse_rg_output(
+    raw: bytes, request: SearchFilesInput, workspace: Workspace
+) -> _SearchResult:
     text = raw.decode("utf-8", errors="replace")
     items: list[dict[str, Any]] = []
     used = 0
@@ -470,12 +472,18 @@ def _parse_rg_output(raw: bytes, request: SearchFilesInput) -> _SearchResult:
             column = int(column_text)
         except ValueError:
             continue
+        relative_path = path.replace("\\", "/")
         item = {
-            "path": path.replace("\\", "/"),
+            "path": relative_path,
             "line": line_number,
             "column": column,
             "text": content,
         }
+        try:
+            workspace.resolve_read(relative_path)
+        except WorkspacePathError:
+            # rg can see text targets that the Tool policy must not expose.
+            continue
         size = len(json.dumps(item, ensure_ascii=False).encode("utf-8")) + 1
         if len(items) >= request.max_matches or used + size > request.max_bytes:
             truncated = True
