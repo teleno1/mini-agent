@@ -155,6 +155,10 @@ class ReadFileTool(_WorkspaceTool):
     description = "Read a bounded UTF-8 text range from a Workspace-relative file."
     input_model: ClassVar[type[BaseModel]] = ReadFileInput
 
+    def preflight(self, workspace: Workspace, arguments: BaseModel) -> None:
+        request = _as_read_input(arguments)
+        workspace.resolve_read(request.path)
+
     def assess(self, arguments: BaseModel) -> RiskAssessment:
         request = _as_read_input(arguments)
         return RiskAssessment(
@@ -194,6 +198,10 @@ class SearchFilesTool(_WorkspaceTool):
     name = "search_files"
     description = "Search Workspace text using a literal or regular expression query."
     input_model: ClassVar[type[BaseModel]] = SearchFilesInput
+
+    def preflight(self, workspace: Workspace, arguments: BaseModel) -> None:
+        request = _as_search_input(arguments)
+        workspace.resolve_read(request.directory, directory=True)
 
     def assess(self, arguments: BaseModel) -> RiskAssessment:
         request = _as_search_input(arguments)

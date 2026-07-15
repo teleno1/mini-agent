@@ -37,7 +37,7 @@ from mini_agent.tools.contracts import (
     ToolValidationError,
     invalid_result,
 )
-from mini_agent.tools.workspace import Workspace
+from mini_agent.tools.workspace import Workspace, WorkspacePathError
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,9 +167,13 @@ class AgentTurnApplication:
 
         max_requests = effective_configuration.max_model_requests if effective_configuration else 25
         max_tools = effective_configuration.max_tool_calls if effective_configuration else 50
+        max_active_seconds = (
+            effective_configuration.max_active_seconds if effective_configuration else 30 * 60
+        )
 
         try:
             while request_count < max_requests:
+                self._ensure_active_budget(started_at, max_active_seconds)
                 request_count += 1
                 request_id = self._id_generator.new_id("request")
                 frame = self._build_frame(
@@ -212,6 +216,7 @@ class AgentTurnApplication:
                     async for event in self._provider.stream(provider_input):
                         stream_events.append(event)
                         all_stream_events.append(event)
+                        self._ensure_active_budget(started_at, max_active_seconds)
                         if on_event is not None:
                             observed = on_event(event)
                             if inspect.isawaitable(observed):
@@ -388,7 +393,24 @@ class AgentTurnApplication:
             return invalid_result(
                 call, code="invalid-input", message="Tool arguments are invalid"
             ), causation_id
-        decision = self._permission_gate.decide(validated.risk)
+        tool = self._tool_registry.require(call.name)
+        preflight_failure: ToolResult | None = None
+        preflight = getattr(tool, "preflight", None)
+        try:
+            if preflight is not None:
+                preflight(self._workspace, validated.arguments)
+        except WorkspacePathError as exc:
+            preflight_failure = ToolResult.failed(
+                call,
+                category="tool-execution",
+                code=exc.code,
+                message=str(exc),
+            )
+        decision = (
+            PermissionDecision.DENY
+            if preflight_failure is not None
+            else self._permission_gate.decide(validated.risk)
+        )
         decision_at = self._clock.now()
         validated_event = self._append_tool_event(
             writer,
@@ -403,6 +425,8 @@ class AgentTurnApplication:
                     validated.risk,
                     decision,
                     mode=permission_mode,
+                    matched_rule="workspace-confinement" if preflight_failure else None,
+                    reason=preflight_failure.text if preflight_failure else None,
                     timestamp=decision_at,
                 ),
             },
@@ -410,6 +434,11 @@ class AgentTurnApplication:
             causation_id=causation_id,
             timestamp=decision_at,
         )
+        if preflight_failure is not None:
+            return (
+                preflight_failure,
+                validated_event.event_id if validated_event else causation_id,
+            )
         if decision is not PermissionDecision.ALLOW:
             return (
                 ToolResult.failed(
@@ -428,7 +457,6 @@ class AgentTurnApplication:
             turn_id=turn_id,
             causation_id=validated_event.event_id if validated_event else causation_id,
         )
-        tool = self._tool_registry.require(call.name)
         try:
             result = await asyncio.wait_for(
                 tool.execute(self._workspace, validated.arguments),
@@ -466,6 +494,11 @@ class AgentTurnApplication:
                 ),
                 started_event.event_id if started_event else causation_id,
             )
+
+    def _ensure_active_budget(self, started_at: datetime, max_active_seconds: int) -> None:
+        elapsed = (self._clock.now() - started_at).total_seconds()
+        if elapsed >= max_active_seconds:
+            raise AgentLimitError("active execution budget exhausted")
 
     def _append_tool_event(
         self,
@@ -565,6 +598,8 @@ def _permission_payload(
     decision: PermissionDecision,
     *,
     mode: str,
+    matched_rule: str | None,
+    reason: str | None,
     timestamp: datetime,
 ) -> dict[str, JSONValue]:
     arguments = json.dumps(
@@ -579,8 +614,9 @@ def _permission_payload(
         "risk": cast(dict[str, JSONValue], risk.model_dump(mode="json")),
         "mode": mode,
         "decision": decision.value,
-        "matched_rule": "safe-read" if allowed else "read-only-deny",
-        "reason": (
+        "matched_rule": matched_rule or ("safe-read" if allowed else "read-only-deny"),
+        "reason": reason
+        or (
             "safe Workspace read automatically authorized"
             if allowed
             else "non-read Tool Call denied by the read-only host policy"

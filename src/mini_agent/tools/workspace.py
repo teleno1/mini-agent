@@ -166,23 +166,30 @@ class Workspace:
         except (OSError, UnicodeDecodeError):
             return False
         path = relative_path.replace("\\", "/").lstrip("./")
+        ignored = False
         for raw_rule in lines:
             rule = raw_rule.strip()
-            if not rule or rule.startswith("#") or rule.startswith("!"):
+            if not rule or rule.startswith("#"):
                 continue
+            negated = rule.startswith("!")
+            if negated:
+                rule = rule[1:]
             anchored = rule.startswith("/")
             rule = rule.lstrip("/")
             directory_rule = rule.endswith("/")
             rule = rule.rstrip("/")
+            matched = False
             if directory_rule and (path == rule or path.startswith(rule + "/")):
-                return True
-            if anchored and _glob_match(path, rule):
-                return True
-            if not anchored and (
+                matched = True
+            elif anchored and _glob_match(path, rule):
+                matched = True
+            elif not anchored and (
                 _glob_match(path, rule) or any(_glob_match(part, rule) for part in path.split("/"))
             ):
-                return True
-        return False
+                matched = True
+            if matched:
+                ignored = not negated
+        return ignored
 
     def _validate_relative(self, target: str) -> str:
         if not isinstance(target, str) or not target.strip():

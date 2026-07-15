@@ -11,7 +11,8 @@ from pydantic import BaseModel
 from mini_agent.adapters.clocks import DeterministicClock
 from mini_agent.adapters.ids import DeterministicIdGenerator
 from mini_agent.adapters.session_store import SessionStore
-from mini_agent.application.agent import AgentTurnApplication
+from mini_agent.application.agent import AgentLimitError, AgentTurnApplication
+from mini_agent.configuration import EffectiveConfiguration, PermissionMode
 from mini_agent.context import ContextBuilder, ContextFrame, ContextLayerName
 from mini_agent.domain.messages import AssistantMessage, ToolResultMessage
 from mini_agent.domain.sessions import SessionEventType
@@ -246,6 +247,7 @@ async def test_fake_agent_returns_bounded_failure_and_model_receives_it(tmp_path
     assert isinstance(provider.requests[1][-1], ToolResultMessage)
     assert provider.requests[1][-1].outcome == ToolOutcome.FAILED.value
     assert [event.event_type for event in snapshot.events].count(SessionEventType.TOOL_FAILED) == 1
+    assert SessionEventType.TOOL_STARTED not in [event.event_type for event in snapshot.events]
 
 
 @pytest.mark.asyncio
@@ -263,6 +265,45 @@ async def test_fake_agent_adapts_to_bounded_search_results(tmp_path: Path) -> No
     assert "src/main.py" in result.tool_results[0].content
     assert isinstance(provider.requests[1][-1], ToolResultMessage)
     assert provider.requests[1][-1].tool_call_id == "call-search"
+
+
+@pytest.mark.asyncio
+async def test_agent_fails_before_provider_work_when_active_budget_is_exhausted(
+    tmp_path: Path,
+) -> None:
+    provider = ScriptedFakeModelProvider()
+    clock = DeterministicClock(datetime(2026, 1, 1, tzinfo=UTC))
+    ids = DeterministicIdGenerator()
+    store = SessionStore(tmp_path, clock=clock, id_generator=ids)
+    configuration = EffectiveConfiguration(
+        model="fake",
+        permission_mode=PermissionMode.SUGGEST,
+        provider_base_url="https://example.test/v1",
+        max_model_requests=25,
+        max_tool_calls=50,
+        max_active_seconds=0,
+        context_window_tokens=1000,
+        response_reserve_tokens=100,
+        artifact_threshold_bytes=32 * 1024,
+        instruction_file_bytes=32 * 1024,
+        instruction_chain_bytes=128 * 1024,
+    )
+    application = AgentTurnApplication(
+        provider=provider,
+        workspace=Workspace(tmp_path),
+        tool_registry=ToolRegistry([ReadFileTool(), SearchFilesTool()]),
+        clock=clock,
+        id_generator=ids,
+        session_store=store,
+        configuration=configuration,
+    )
+
+    with pytest.raises(AgentLimitError, match="active execution budget"):
+        await application.run("do no work")
+
+    snapshot = store.read("session-0001")
+    assert [event.event_type for event in snapshot.events].count(SessionEventType.TURN_FAILED) == 1
+    assert provider.requests == []
 
 
 @pytest.mark.asyncio

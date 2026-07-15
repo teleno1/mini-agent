@@ -419,6 +419,20 @@ def rebuild_projection(events: tuple[SessionEvent, ...]) -> SessionProjection:
                 raise InvalidSessionEvents(
                     f"Tool Call {call.tool_call_id!r} completed before it started"
                 )
+            if event_type is SessionEventType.TOOL_COMPLETED and outcome != "success":
+                raise InvalidSessionEvents("tool.completed outcome must be success")
+            if event_type is SessionEventType.TOOL_FAILED and outcome in {
+                "success",
+                "interrupted",
+            }:
+                raise InvalidSessionEvents("tool.failed outcome is not a known failed outcome")
+            if event_type is SessionEventType.TOOL_INTERRUPTED:
+                if call.status is not ToolCallStatus.STARTED:
+                    raise InvalidSessionEvents(
+                        f"Tool Call {call.tool_call_id!r} was interrupted before it started"
+                    )
+                if outcome != "interrupted":
+                    raise InvalidSessionEvents("tool.interrupted outcome must be interrupted")
             result_text = event.payload.get("result_text", "")
             if not isinstance(result_text, str):
                 raise InvalidSessionEvents("Tool terminal result_text must be a string")

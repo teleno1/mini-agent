@@ -169,10 +169,11 @@ async def test_search_python_fallback_supports_aliases_regex_glob_ignore_and_col
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     workspace = Workspace(tmp_path)
-    (tmp_path / ".gitignore").write_text("ignored/\n*.log\n", encoding="utf-8")
+    (tmp_path / ".gitignore").write_text("ignored/\n*.log\n*.py\n!src/main.py\n", encoding="utf-8")
     source = tmp_path / "src"
     source.mkdir()
     (source / "main.py").write_text("prefix needle here\nother\n", encoding="utf-8")
+    (source / "other.py").write_text("needle ignored by negation\n", encoding="utf-8")
     (source / "main.log").write_text("needle ignored\n", encoding="utf-8")
     ignored = tmp_path / "ignored"
     ignored.mkdir()
