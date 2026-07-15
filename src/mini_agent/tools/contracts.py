@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
@@ -40,6 +42,13 @@ class PermissionDecision(StrEnum):
     DENY = "deny"
 
 
+class CancellationBehavior(StrEnum):
+    """How promptly a Tool can stop after its awaiting task is cancelled."""
+
+    BEST_EFFORT = "best-effort"
+    COOPERATIVE = "cooperative"
+
+
 class ToolLimits(BaseModel):
     """Cancellation and output limits advertised with a Tool definition."""
 
@@ -47,6 +56,7 @@ class ToolLimits(BaseModel):
 
     timeout_seconds: float = 30.0
     max_output_bytes: int = 64 * 1024
+    cancellation: CancellationBehavior = CancellationBehavior.BEST_EFFORT
 
     @classmethod
     def bounded(cls, *, timeout_seconds: float, max_output_bytes: int) -> ToolLimits:
@@ -81,6 +91,52 @@ class ToolCall(BaseModel):
         """Convenience spelling used by provider-neutral message code."""
 
         return self.tool_call_id
+
+
+@dataclass(frozen=True, slots=True)
+class NormalizedToolCall:
+    """Deeply immutable canonical Tool Call presented to permission policy."""
+
+    tool_call_id: str
+    name: str
+    arguments_json: str
+
+    @classmethod
+    def from_call(cls, call: ToolCall) -> NormalizedToolCall:
+        arguments_json = json.dumps(
+            call.arguments,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return cls(call.tool_call_id, call.name, arguments_json)
+
+    @property
+    def arguments(self) -> dict[str, Any]:
+        """Return a disposable copy without exposing mutable authorization state."""
+
+        value = json.loads(self.arguments_json)
+        if not isinstance(value, dict):
+            raise TypeError("normalized Tool arguments must be an object")
+        return value
+
+    @property
+    def argument_hash(self) -> str:
+        payload = json.dumps(
+            {"name": self.name, "arguments": self.arguments},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class PermissionRequest:
+    """Immutable normalized call and risk metadata considered by a Permission Gate."""
+
+    call: NormalizedToolCall
+    risk: RiskAssessment
 
 
 class ToolError(BaseModel):
@@ -199,6 +255,14 @@ class ValidatedToolCall(BaseModel):
     call: ToolCall
     arguments: BaseModel
     risk: RiskAssessment
+
+    def permission_request(self, *, resources: tuple[str, ...] | None = None) -> PermissionRequest:
+        risk = (
+            self.risk
+            if resources is None
+            else self.risk.model_copy(update={"resources": resources})
+        )
+        return PermissionRequest(NormalizedToolCall.from_call(self.call), risk)
 
 
 class ToolRegistry:

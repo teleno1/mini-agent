@@ -10,7 +10,7 @@ from mini_agent.context import ContextFrame
 from mini_agent.domain.messages import Message
 from mini_agent.domain.sessions import JSONValue, SessionEvent, SessionEventType
 from mini_agent.domain.streams import StreamEvent
-from mini_agent.tools.contracts import PermissionDecision, ValidatedToolCall
+from mini_agent.tools.contracts import PermissionDecision, PermissionRequest
 
 
 class ModelProvider(Protocol):
@@ -37,7 +37,7 @@ class IDGenerator(Protocol):
 class PermissionGate(Protocol):
     """Host authorization boundary; Tools never prompt or grant themselves."""
 
-    def decide(self, call: ValidatedToolCall) -> PermissionDecision:
+    def decide(self, request: PermissionRequest) -> PermissionDecision:
         """Decide one immutable normalized Tool Call and its risk metadata."""
 
 

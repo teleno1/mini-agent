@@ -28,6 +28,7 @@ from mini_agent.domain.streams import (
 from mini_agent.providers.fake import ScriptedFakeModelProvider
 from mini_agent.tools.contracts import (
     PermissionDecision,
+    PermissionRequest,
     RiskAssessment,
     SideEffectCategory,
     ToolCall,
@@ -35,7 +36,6 @@ from mini_agent.tools.contracts import (
     ToolOutcome,
     ToolRegistry,
     ToolResult,
-    ValidatedToolCall,
 )
 from mini_agent.tools.files import ReadFileTool, SearchFilesTool
 from mini_agent.tools.workspace import Workspace, WorkspacePathError
@@ -95,15 +95,16 @@ class _InterruptProbeTool:
         raise AssertionError("the interrupted Tool should not return normally")
 
 
-class _MutatingPermissionGate:
-    """Exercise the host's defensive argument-hash recheck."""
+class _InspectingPermissionGate:
+    """Capture the immutable normalized Tool Call seen by host policy."""
 
     def __init__(self) -> None:
-        self.calls: list[ValidatedToolCall] = []
+        self.requests: list[PermissionRequest] = []
 
-    def decide(self, call: ValidatedToolCall) -> PermissionDecision:
-        self.calls.append(call)
-        call.call.arguments["path"] = "changed-after-authorization.txt"
+    def decide(self, request: PermissionRequest) -> PermissionDecision:
+        self.requests.append(request)
+        arguments = request.call.arguments
+        arguments["path"] = "changed-after-authorization.txt"
         return PermissionDecision.ALLOW
 
 
@@ -111,11 +112,11 @@ class _ChangingPreflightReadTool(ReadFileTool):
     def __init__(self) -> None:
         self.preflight_count = 0
 
-    def preflight(self, workspace: Workspace, arguments: BaseModel) -> None:
+    def preflight(self, workspace: Workspace, arguments: BaseModel) -> tuple[str, ...]:
         self.preflight_count += 1
         if self.preflight_count == 2:
             raise WorkspacePathError("outside")
-        super().preflight(workspace, arguments)
+        return super().preflight(workspace, arguments)
 
 
 def _provider_for_read(*, path: str, final_text: str) -> ScriptedFakeModelProvider:
@@ -276,10 +277,11 @@ async def test_fake_agent_returns_bounded_failure_and_model_receives_it(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_agent_rechecks_argument_hash_after_permission_decision(tmp_path: Path) -> None:
-    (tmp_path / "main.py").write_text("safe\n", encoding="utf-8")
-    provider = _provider_for_read(path="main.py", final_text="The changed call was denied.")
-    gate = _MutatingPermissionGate()
+async def test_permission_gate_receives_an_immutable_normalized_call(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "main.py").write_text("safe\n", encoding="utf-8")
+    provider = _provider_for_read(path="src/./main.py", final_text="The immutable call was read.")
+    gate = _InspectingPermissionGate()
     clock = DeterministicClock(datetime(2026, 1, 1, tzinfo=UTC))
     ids = DeterministicIdGenerator()
     store = SessionStore(tmp_path, clock=clock, id_generator=ids)
@@ -296,10 +298,12 @@ async def test_agent_rechecks_argument_hash_after_permission_decision(tmp_path: 
     result = await application.run("read safely")
     events = store.read(result.session_id).events
 
-    assert gate.calls[0].call.name == "read_file"
-    assert result.tool_results[0].outcome == ToolOutcome.DENIED.value
-    assert result.tool_results[0].content == "Tool arguments changed after authorization"
-    assert SessionEventType.TOOL_STARTED not in [event.event_type for event in events]
+    request = gate.requests[0]
+    assert request.call.name == "read_file"
+    assert request.call.arguments["path"] == "src/./main.py"
+    assert request.risk.resources == ("src/main.py",)
+    assert result.tool_results[0].outcome == ToolOutcome.SUCCESS.value
+    assert SessionEventType.TOOL_STARTED in [event.event_type for event in events]
 
 
 @pytest.mark.asyncio

@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from mini_agent.tools.contracts import (
+    CancellationBehavior,
     SideEffectCategory,
     ToolCall,
     ToolOutcome,
@@ -32,6 +33,7 @@ def test_registry_exposes_typed_read_and_search_definitions_and_preserves_call_i
     assert [definition.name for definition in definitions] == ["read_file", "search_files"]
     assert all(definition.side_effect is SideEffectCategory.READ for definition in definitions)
     assert definitions[0].limits.max_output_bytes == 64 * 1024
+    assert definitions[0].limits.cancellation is CancellationBehavior.BEST_EFFORT
 
     (tmp_path / "note.txt").write_text("hello\n", encoding="utf-8")
     call = ToolCall(id="call-read-42", name="read_file", arguments={"path": "note.txt"})

@@ -29,13 +29,12 @@ from mini_agent.domain.streams import StreamEvent
 from mini_agent.domain.turns import StreamFailed, close_agent_response
 from mini_agent.tools.contracts import (
     PermissionDecision,
-    RiskAssessment,
+    PermissionRequest,
     ToolCall,
     ToolOutcome,
     ToolRegistry,
     ToolResult,
     ToolValidationError,
-    ValidatedToolCall,
     invalid_result,
 )
 from mini_agent.tools.workspace import Workspace, WorkspacePathError
@@ -62,8 +61,8 @@ class AgentTurnResult:
 class ReadOnlyPermissionGate:
     """Automatically allow safe reads and deny other side-effect classes."""
 
-    def decide(self, call: ValidatedToolCall) -> PermissionDecision:
-        if call.risk.side_effect.value == "read":
+    def decide(self, request: PermissionRequest) -> PermissionDecision:
+        if request.risk.side_effect.value == "read":
             return PermissionDecision.ALLOW
         return PermissionDecision.DENY
 
@@ -396,18 +395,20 @@ class AgentTurnApplication:
             ), causation_id
         call = validated.call.model_copy(deep=True)
         tool = self._tool_registry.require(call.name)
-        authorized_argument_hash = _argument_hash(call)
         preflight_failure: ToolResult | None = None
         preflight = getattr(tool, "preflight", None)
+        normalized_resources = validated.risk.resources if preflight is None else ()
         try:
             if preflight is not None:
-                preflight(self._workspace, validated.arguments)
+                normalized_resources = tuple(preflight(self._workspace, validated.arguments))
         except WorkspacePathError as exc:
             preflight_failure = _workspace_failure(call, exc)
+        permission_request = validated.permission_request(resources=normalized_resources)
+        authorized_argument_hash = permission_request.call.argument_hash
         decision = (
             PermissionDecision.DENY
             if preflight_failure is not None
-            else self._permission_gate.decide(validated)
+            else self._permission_gate.decide(permission_request)
         )
         if preflight_failure is None and decision is PermissionDecision.ALLOW:
             if _argument_hash(validated.call) != authorized_argument_hash:
@@ -422,7 +423,9 @@ class AgentTurnApplication:
             else:
                 try:
                     if preflight is not None:
-                        preflight(self._workspace, validated.arguments)
+                        final_resources = tuple(preflight(self._workspace, validated.arguments))
+                        if final_resources != normalized_resources:
+                            raise WorkspacePathError("outside")
                 except WorkspacePathError as exc:
                     preflight_failure = _workspace_failure(call, exc)
                     decision = PermissionDecision.DENY
@@ -434,16 +437,14 @@ class AgentTurnApplication:
                 "tool_call_id": call.tool_call_id,
                 "name": call.name,
                 "arguments": cast(dict[str, JSONValue], call.arguments),
-                "risk": cast(dict[str, JSONValue], validated.risk.model_dump(mode="json")),
+                "risk": cast(dict[str, JSONValue], permission_request.risk.model_dump(mode="json")),
                 "permission": _permission_payload(
-                    call,
-                    validated.risk,
+                    permission_request,
                     decision,
                     mode=permission_mode,
                     matched_rule="workspace-confinement" if preflight_failure else None,
                     reason=preflight_failure.text if preflight_failure else None,
                     timestamp=decision_at,
-                    argument_hash=authorized_argument_hash,
                 ),
             },
             turn_id=turn_id,
@@ -609,20 +610,18 @@ def _history_without_current_user(
 
 
 def _permission_payload(
-    call: ToolCall,
-    risk: RiskAssessment,
+    request: PermissionRequest,
     decision: PermissionDecision,
     *,
     mode: str,
     matched_rule: str | None,
     reason: str | None,
     timestamp: datetime,
-    argument_hash: str,
 ) -> dict[str, JSONValue]:
     allowed = decision is PermissionDecision.ALLOW
     return {
-        "tool_call_id": call.tool_call_id,
-        "risk": cast(dict[str, JSONValue], risk.model_dump(mode="json")),
+        "tool_call_id": request.call.tool_call_id,
+        "risk": cast(dict[str, JSONValue], request.risk.model_dump(mode="json")),
         "mode": mode,
         "decision": decision.value,
         "matched_rule": matched_rule or ("safe-read" if allowed else "read-only-deny"),
@@ -633,8 +632,8 @@ def _permission_payload(
             else "non-read Tool Call denied by the read-only host policy"
         ),
         "scope": "turn",
-        "resource_summary": list(risk.resources),
-        "argument_hash": argument_hash,
+        "resource_summary": list(request.risk.resources),
+        "argument_hash": request.call.argument_hash,
         "timestamp": timestamp.isoformat(),
     }
 

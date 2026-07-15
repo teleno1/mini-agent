@@ -1,7 +1,10 @@
 """Host-enforced tools exposed to the Coding Agent."""
 
 from mini_agent.tools.contracts import (
+    CancellationBehavior,
+    NormalizedToolCall,
     PermissionDecision,
+    PermissionRequest,
     RiskAssessment,
     SideEffectCategory,
     Tool,
@@ -31,7 +34,10 @@ from mini_agent.tools.workspace import (
 
 __all__ = [
     "BinaryTargetError",
+    "CancellationBehavior",
+    "NormalizedToolCall",
     "PermissionDecision",
+    "PermissionRequest",
     "ReadFileInput",
     "ReadFileTool",
     "RiskAssessment",
