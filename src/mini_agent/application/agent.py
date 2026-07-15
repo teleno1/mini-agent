@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import cast
 
+from mini_agent.application.permissions import PermissionPolicyGate, UserInteraction
 from mini_agent.application.ports import (
     Clock,
     EventObserver,
@@ -21,7 +22,7 @@ from mini_agent.application.ports import (
     SessionStore,
     SessionWriter,
 )
-from mini_agent.configuration import ConfigurationResolver, EffectiveConfiguration
+from mini_agent.configuration import ConfigurationResolver, EffectiveConfiguration, PermissionMode
 from mini_agent.context import ContextBuilder, ContextFrame
 from mini_agent.domain.messages import AssistantMessage, Message, ToolResultMessage, UserMessage
 from mini_agent.domain.sessions import JSONValue, SessionEvent, SessionEventType
@@ -37,6 +38,7 @@ from mini_agent.tools.contracts import (
     ToolValidationError,
     invalid_result,
 )
+from mini_agent.tools.patches import WriteValidationError
 from mini_agent.tools.workspace import Workspace, WorkspacePathError
 
 
@@ -87,6 +89,7 @@ class AgentTurnApplication:
         configuration_resolver: ConfigurationResolver | None = None,
         request_targets: tuple[str, ...] = (),
         permission_gate: PermissionGate | None = None,
+        user_interaction: UserInteraction | None = None,
     ) -> None:
         self._provider = provider
         self._workspace = workspace
@@ -98,7 +101,11 @@ class AgentTurnApplication:
         self._configuration = configuration
         self._configuration_resolver = configuration_resolver
         self._request_targets = request_targets
-        self._permission_gate = permission_gate or ReadOnlyPermissionGate()
+        self._permission_gate = permission_gate
+        self._default_permission_gate = PermissionPolicyGate(
+            PermissionMode.SUGGEST,
+            interaction=user_interaction,
+        )
 
     async def run(
         self,
@@ -164,6 +171,20 @@ class AgentTurnApplication:
                 self._record_failed_turn(writer, turn_id, None, exc)
                 writer.close()
             raise
+
+        permission_gate = self._permission_gate or self._default_permission_gate
+        if isinstance(permission_gate, PermissionPolicyGate):
+            permission_gate.begin_session(resolved_session_id)
+            permission_gate.set_mode(
+                effective_configuration.permission_mode
+                if effective_configuration is not None
+                else PermissionMode.SUGGEST
+            )
+        execution_workspace = (
+            self._workspace.for_session(resolved_session_id)
+            if writer is not None
+            else self._workspace
+        )
 
         max_requests = effective_configuration.max_model_requests if effective_configuration else 25
         max_tools = effective_configuration.max_tool_calls if effective_configuration else 50
@@ -310,6 +331,8 @@ class AgentTurnApplication:
                     result, terminal_causation = await self._execute_tool(
                         call,
                         writer,
+                        execution_workspace,
+                        permission_gate,
                         turn_id=turn_id,
                         causation_id=proposed_event.event_id if proposed_event else None,
                         permission_mode=(
@@ -332,7 +355,7 @@ class AgentTurnApplication:
                     )
                     tool_messages.append(result_message)
                     conversation = (*conversation, result_message)
-                    if result.outcome is ToolOutcome.INTERRUPTED:
+                    if result.outcome in {ToolOutcome.INTERRUPTED, ToolOutcome.CANCELLED}:
                         raise asyncio.CancelledError
                 continue
             raise AgentLimitError("model request budget exhausted")
@@ -382,6 +405,8 @@ class AgentTurnApplication:
         self,
         call: ToolCall,
         writer: SessionWriter | None,
+        workspace: Workspace,
+        permission_gate: PermissionGate,
         *,
         turn_id: str,
         causation_id: str | None,
@@ -397,18 +422,18 @@ class AgentTurnApplication:
         tool = self._tool_registry.require(call.name)
         preflight_failure: ToolResult | None = None
         preflight = getattr(tool, "preflight", None)
-        normalized_resources = validated.risk.resources if preflight is None else ()
+        normalized_resources = validated.risk.resources
         try:
             if preflight is not None:
-                normalized_resources = tuple(preflight(self._workspace, validated.arguments))
-        except WorkspacePathError as exc:
-            preflight_failure = _workspace_failure(call, exc)
+                normalized_resources = tuple(preflight(workspace, validated.arguments))
+        except (WorkspacePathError, WriteValidationError) as exc:
+            preflight_failure = _preflight_failure(call, exc)
         permission_request = validated.permission_request(resources=normalized_resources)
         authorized_argument_hash = permission_request.call.argument_hash
         decision = (
             PermissionDecision.DENY
             if preflight_failure is not None
-            else self._permission_gate.decide(permission_request)
+            else permission_gate.decide(permission_request)
         )
         if preflight_failure is None and decision is PermissionDecision.ALLOW:
             if _argument_hash(validated.call) != authorized_argument_hash:
@@ -423,13 +448,14 @@ class AgentTurnApplication:
             else:
                 try:
                     if preflight is not None:
-                        final_resources = tuple(preflight(self._workspace, validated.arguments))
+                        final_resources = tuple(preflight(workspace, validated.arguments))
                         if final_resources != normalized_resources:
                             raise WorkspacePathError("outside")
-                except WorkspacePathError as exc:
-                    preflight_failure = _workspace_failure(call, exc)
+                except (WorkspacePathError, WriteValidationError) as exc:
+                    preflight_failure = _preflight_failure(call, exc)
                     decision = PermissionDecision.DENY
         decision_at = self._clock.now()
+        decision_metadata = getattr(permission_gate, "last_metadata", None)
         validated_event = self._append_tool_event(
             writer,
             SessionEventType.TOOL_VALIDATED,
@@ -442,8 +468,19 @@ class AgentTurnApplication:
                     permission_request,
                     decision,
                     mode=permission_mode,
-                    matched_rule="workspace-confinement" if preflight_failure else None,
-                    reason=preflight_failure.text if preflight_failure else None,
+                    matched_rule=(
+                        "workspace-confinement"
+                        if preflight_failure
+                        else getattr(decision_metadata, "matched_rule", None)
+                    ),
+                    reason=(
+                        preflight_failure.text
+                        if preflight_failure
+                        else getattr(decision_metadata, "reason", None)
+                    ),
+                    scope=(
+                        "none" if preflight_failure else getattr(decision_metadata, "scope", "turn")
+                    ),
                     timestamp=decision_at,
                 ),
             },
@@ -476,7 +513,7 @@ class AgentTurnApplication:
         )
         try:
             result = await asyncio.wait_for(
-                tool.execute(self._workspace, validated.arguments),
+                tool.execute(workspace, validated.arguments),
                 timeout=tool.limits.timeout_seconds,
             )
             return result.for_call(call), started_event.event_id if started_event else causation_id
@@ -616,6 +653,7 @@ def _permission_payload(
     mode: str,
     matched_rule: str | None,
     reason: str | None,
+    scope: str,
     timestamp: datetime,
 ) -> dict[str, JSONValue]:
     allowed = decision is PermissionDecision.ALLOW
@@ -631,7 +669,7 @@ def _permission_payload(
             if allowed
             else "non-read Tool Call denied by the read-only host policy"
         ),
-        "scope": "turn",
+        "scope": scope,
         "resource_summary": list(request.risk.resources),
         "argument_hash": request.call.argument_hash,
         "timestamp": timestamp.isoformat(),
@@ -653,6 +691,20 @@ def _workspace_failure(call: ToolCall, exc: WorkspacePathError) -> ToolResult:
         call,
         outcome=ToolOutcome.DENIED if exc.hard_denial else ToolOutcome.FAILED,
         category="permission" if exc.hard_denial else "tool-execution",
+        code=exc.code,
+        message=str(exc),
+    )
+
+
+def _preflight_failure(
+    call: ToolCall, exc: WorkspacePathError | WriteValidationError
+) -> ToolResult:
+    if isinstance(exc, WorkspacePathError):
+        return _workspace_failure(call, exc)
+    return ToolResult.failed(
+        call,
+        outcome=ToolOutcome.FAILED,
+        category="tool-validation",
         code=exc.code,
         message=str(exc),
     )

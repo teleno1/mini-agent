@@ -24,6 +24,16 @@ from mini_agent.tools.files import (
     SearchFilesInput,
     SearchFilesTool,
 )
+from mini_agent.tools.patches import (
+    ApplyPatchInput,
+    ApplyPatchTool,
+    Checkpoint,
+    CreateFileInput,
+    CreateFileTool,
+    PatchCheckpoint,
+    PatchInput,
+    PatchOperation,
+)
 from mini_agent.tools.workspace import (
     BinaryTargetError,
     SensitiveTargetError,
@@ -34,10 +44,18 @@ from mini_agent.tools.workspace import (
 
 __all__ = [
     "BinaryTargetError",
+    "ApplyPatchInput",
+    "ApplyPatchTool",
+    "Checkpoint",
     "CancellationBehavior",
+    "CreateFileInput",
+    "CreateFileTool",
     "NormalizedToolCall",
     "PermissionDecision",
     "PermissionRequest",
+    "PatchCheckpoint",
+    "PatchInput",
+    "PatchOperation",
     "ReadFileInput",
     "ReadFileTool",
     "RiskAssessment",

@@ -7,11 +7,23 @@ from mini_agent.application.agent import (
     ReadOnlyPermissionGate,
     SafeReadPermissionGate,
 )
+from mini_agent.application.permissions import (
+    ConfirmationChoice,
+    PermissionGrant,
+    PermissionPolicyGate,
+    PermissionPreview,
+    UserInteraction,
+)
 
 __all__ = [
     "AgentLimitError",
     "AgentTurnApplication",
     "AgentTurnResult",
+    "ConfirmationChoice",
+    "PermissionPolicyGate",
+    "PermissionPreview",
+    "PermissionGrant",
     "ReadOnlyPermissionGate",
     "SafeReadPermissionGate",
+    "UserInteraction",
 ]

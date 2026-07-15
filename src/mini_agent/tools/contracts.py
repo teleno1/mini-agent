@@ -199,6 +199,7 @@ class ToolResult(BaseModel):
         category: str,
         code: str,
         message: str,
+        data: Mapping[str, Any] | None = None,
     ) -> ToolResult:
         if outcome is ToolOutcome.SUCCESS:
             raise ValueError("a failed Tool Result cannot have success outcome")
@@ -206,6 +207,7 @@ class ToolResult(BaseModel):
             tool_call_id=call.tool_call_id,
             tool_name=call.name,
             outcome=outcome,
+            data=dict(data or {}),
             error=ToolError(category=category, code=code, message=message),
         )
 

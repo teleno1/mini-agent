@@ -22,6 +22,14 @@ from mini_agent.tools.contracts import (
     ToolOutcome,
     ToolResult,
 )
+from mini_agent.tools.patches import (
+    ApplyPatchInput,
+    ApplyPatchTool,
+    CreateFileInput,
+    CreateFileTool,
+    PatchInput,
+    PatchOperation,
+)
 from mini_agent.tools.workspace import (
     BinaryTargetError,
     Workspace,
@@ -32,6 +40,15 @@ from mini_agent.tools.workspace import (
 MAX_LINES = 500
 MAX_BYTES = 64 * 1024
 MAX_SEARCH_MATCHES = 200
+
+__all__ = [
+    "ApplyPatchInput",
+    "ApplyPatchTool",
+    "CreateFileInput",
+    "CreateFileTool",
+    "PatchInput",
+    "PatchOperation",
+]
 
 
 class ReadFileInput(BaseModel):
