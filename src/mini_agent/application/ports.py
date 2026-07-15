@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Protocol
 
 from mini_agent.context import ContextFrame
+from mini_agent.domain.artifacts import ArtifactReference
 from mini_agent.domain.messages import Message
 from mini_agent.domain.sessions import JSONValue, SessionEvent, SessionEventType
 from mini_agent.domain.streams import StreamEvent
@@ -62,6 +63,15 @@ class SessionWriter(Protocol):
         event_id: str | None = None,
     ) -> SessionEvent:
         """Append one event and return its durable identity."""
+
+    def write_artifact(
+        self,
+        content: bytes,
+        *,
+        media_type: str,
+        preview_bytes: int = 4 * 1024,
+    ) -> ArtifactReference:
+        """Atomically write an immutable Artifact under the Session lock."""
 
     def close(self) -> None:
         """Release the exclusive Session writer."""

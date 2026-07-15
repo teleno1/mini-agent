@@ -1,5 +1,12 @@
 """Public compatibility surface for the filesystem Session adapter."""
 
+from mini_agent.adapters.artifacts import (
+    ArtifactError,
+    ArtifactIntegrityError,
+    ArtifactNotFoundError,
+    ArtifactPersistenceError,
+    ArtifactStore,
+)
 from mini_agent.adapters.session_store import (
     JSONLSessionStore,
     JsonlSessionStore,
@@ -23,6 +30,11 @@ from mini_agent.adapters.session_store import (
 
 __all__ = [
     "JSONLSessionStore",
+    "ArtifactError",
+    "ArtifactIntegrityError",
+    "ArtifactNotFoundError",
+    "ArtifactPersistenceError",
+    "ArtifactStore",
     "JsonlSessionStore",
     "LockEvidence",
     "PartialTailWarning",

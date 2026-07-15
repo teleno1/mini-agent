@@ -13,6 +13,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import cast
 
+from mini_agent.domain.artifacts import ArtifactReference
 from mini_agent.domain.messages import (
     AssistantMessage,
     Message,
@@ -50,6 +51,8 @@ class SessionEventType(StrEnum):
     TOOL_COMPLETED = "tool.completed"
     TOOL_FAILED = "tool.failed"
     TOOL_INTERRUPTED = "tool.interrupted"
+    ARTIFACT_WRITTEN = "artifact.written"
+    ARTIFACT_CREATED = "artifact.written"
 
 
 class SessionStatus(StrEnum):
@@ -164,6 +167,7 @@ class ToolCallProjection:
     status: ToolCallStatus
     risk: dict[str, JSONValue] | None = None
     result: ToolResultMessage | None = None
+    artifact: ArtifactReference | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,6 +205,7 @@ class SessionProjection:
     messages: tuple[Message, ...]
     configuration_overrides: Mapping[str, JSONValue] = field(default_factory=dict)
     context_manifests: tuple[dict[str, JSONValue], ...] = ()
+    artifacts: tuple[ArtifactReference, ...] = ()
 
     @property
     def current_turn(self) -> TurnProjection | None:
@@ -244,6 +249,7 @@ def rebuild_projection(events: tuple[SessionEvent, ...]) -> SessionProjection:
     messages: list[Message] = []
     configuration_overrides: list[dict[str, JSONValue]] = []
     context_manifests: list[dict[str, JSONValue]] = []
+    artifacts: dict[str, ArtifactReference] = {}
     status = SessionStatus.IDLE
     created_at = events[0].timestamp
 
@@ -284,6 +290,19 @@ def rebuild_projection(events: tuple[SessionEvent, ...]) -> SessionProjection:
             continue
 
         if event_type is SessionEventType.INSTRUCTION_CHANGED:
+            continue
+
+        if event_type is SessionEventType.ARTIFACT_WRITTEN:
+            raw_artifact = event.payload.get("artifact")
+            if not isinstance(raw_artifact, dict):
+                raise InvalidSessionEvents("artifact.written must contain an artifact object")
+            try:
+                artifact = ArtifactReference.from_dict(raw_artifact)
+            except ValueError as exc:
+                raise InvalidSessionEvents(str(exc)) from exc
+            if artifact.artifact_id in artifacts:
+                raise InvalidSessionEvents(f"Artifact {artifact.artifact_id!r} was written twice")
+            artifacts[artifact.artifact_id] = artifact
             continue
 
         if event_type is SessionEventType.TURN_STARTED:
@@ -468,8 +487,9 @@ def rebuild_projection(events: tuple[SessionEvent, ...]) -> SessionProjection:
             if not isinstance(result_text, str):
                 raise InvalidSessionEvents("Tool terminal result_text must be a string")
             result = ToolResultMessage(call.tool_call_id, result_text, outcome)
+            terminal_artifact = _artifact_for_terminal(event, artifacts)
             status_value = ToolCallStatus(event_type.value.rsplit(".", 1)[-1])
-            updated = replace(call, status=status_value, result=result)
+            updated = replace(call, status=status_value, result=result, artifact=terminal_artifact)
             tool_states[call.tool_call_id] = updated
             turns[turn.turn_id] = replace(turn, tool_calls=_replace_tool(turn.tool_calls, updated))
             messages.append(result)
@@ -523,6 +543,7 @@ def rebuild_projection(events: tuple[SessionEvent, ...]) -> SessionProjection:
             dict(configuration_overrides[-1]) if configuration_overrides else {}
         ),
         context_manifests=tuple(context_manifests),
+        artifacts=tuple(artifacts.values()),
     )
 
 
@@ -590,6 +611,24 @@ def _tool_for_event(
         return tool_states[tool_call_id]
     except KeyError as exc:
         raise InvalidSessionEvents(f"event refers to unknown Tool Call {tool_call_id!r}") from exc
+
+
+def _artifact_for_terminal(
+    event: SessionEvent, artifacts: dict[str, ArtifactReference]
+) -> ArtifactReference | None:
+    raw_artifact = event.payload.get("artifact")
+    if raw_artifact is None:
+        return None
+    if not isinstance(raw_artifact, dict):
+        raise InvalidSessionEvents("Tool terminal artifact must be an object")
+    try:
+        artifact = ArtifactReference.from_dict(raw_artifact)
+    except ValueError as exc:
+        raise InvalidSessionEvents(str(exc)) from exc
+    stored = artifacts.get(artifact.artifact_id)
+    if stored != artifact:
+        raise InvalidSessionEvents("Tool terminal references an unknown or changed Artifact")
+    return artifact
 
 
 def _replace_tool(

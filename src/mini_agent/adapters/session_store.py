@@ -18,9 +18,11 @@ from pathlib import Path
 from typing import cast
 from uuid import uuid4
 
+from mini_agent.adapters.artifacts import ArtifactNotFoundError, ArtifactStore
 from mini_agent.adapters.clocks import SystemClock
 from mini_agent.adapters.ids import UUIDIdGenerator
 from mini_agent.application.ports import Clock, IDGenerator
+from mini_agent.domain.artifacts import ArtifactReference
 from mini_agent.domain.messages import Message
 from mini_agent.domain.sessions import (
     CURRENT_SCHEMA_VERSION,
@@ -279,6 +281,7 @@ class SessionWriter:
         self._lock = lock
         self._events = list(events)
         self._projection: SessionProjection | None = rebuild_projection(events) if events else None
+        self._artifact_store = ArtifactStore(directory, id_generator=store._id_generator)
         self._closed = False
 
     @property
@@ -300,6 +303,22 @@ class SessionWriter:
             read_only=False,
             recovery_warnings=(),
         ).metadata
+
+    def write_artifact(
+        self,
+        content: bytes,
+        *,
+        media_type: str,
+        preview_bytes: int = 4 * 1024,
+    ) -> ArtifactReference:
+        """Write an Artifact while this writer's exclusive Session lock is held."""
+
+        self._ensure_open()
+        return self._artifact_store.write(
+            content,
+            media_type=media_type,
+            preview_bytes=preview_bytes,
+        )
 
     def append(
         self,
@@ -530,6 +549,71 @@ class SessionStore:
         return tuple(sorted(metadata, key=lambda item: item.updated_at, reverse=True))
 
     list = list_sessions
+
+    def read_artifact(
+        self,
+        session_id: str,
+        artifact_id: str,
+        *,
+        start_byte: int,
+        max_bytes: int,
+    ) -> tuple[ArtifactReference, bytes, bool]:
+        """Resolve a model-visible identity from durable events and read a range."""
+
+        directory = self._session_directory(session_id)
+        events_path = directory / "events.jsonl"
+        lock_path = directory / "writer.lock"
+        lock_evidence = _read_lock_evidence(lock_path) if lock_path.exists() else None
+        if lock_evidence is not None and lock_evidence.pid == os.getpid():
+            loaded = _load_events(events_path, session_id, repair=False)
+            projection = rebuild_projection(loaded.events) if not loaded.newer_schema else None
+            snapshot = SessionSnapshot(
+                session_id=session_id,
+                events=loaded.events,
+                projection=projection,
+                read_only=loaded.newer_schema,
+                recovery_warnings=loaded.warnings,
+            )
+        else:
+            snapshot = self.read(session_id)
+        if snapshot.projection is None:
+            raise ArtifactNotFoundError(
+                "Artifact references are unavailable in a newer Session schema"
+            )
+        try:
+            reference = next(
+                artifact
+                for artifact in snapshot.projection.artifacts
+                if artifact.artifact_id == artifact_id
+            )
+        except StopIteration as exc:
+            raise ArtifactNotFoundError("Artifact identity is not known to this Session") from exc
+        content, truncated = ArtifactStore(directory, id_generator=self._id_generator).read(
+            reference, start_byte=start_byte, max_bytes=max_bytes
+        )
+        return reference, content, truncated
+
+    def list_artifact_orphans(self, session_id: str) -> tuple[Path, ...]:
+        """Return Artifact files not referenced by any terminal Tool event."""
+
+        snapshot = self.read(session_id)
+        committed: set[str] = set()
+        terminal_types = {
+            SessionEventType.TOOL_COMPLETED,
+            SessionEventType.TOOL_FAILED,
+            SessionEventType.TOOL_INTERRUPTED,
+        }
+        for event in snapshot.events:
+            if event.event_type not in terminal_types:
+                continue
+            value = event.payload.get("artifact")
+            if isinstance(value, dict):
+                artifact_id = value.get("artifact_id")
+                if isinstance(artifact_id, str):
+                    committed.add(artifact_id)
+        return ArtifactStore(self._session_directory(session_id)).list_orphans(committed)
+
+    find_artifact_orphans = list_artifact_orphans
 
     def append(
         self,

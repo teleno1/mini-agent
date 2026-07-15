@@ -13,6 +13,8 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError
 
 from mini_agent.tools.workspace import Workspace
 
+MAX_TOOL_RESPONSE_BYTES = 64 * 1024
+
 
 class SideEffectCategory(StrEnum):
     """The broad side-effect class used by a Permission Policy."""
@@ -55,7 +57,11 @@ class ToolLimits(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     timeout_seconds: float = 30.0
-    max_output_bytes: int = 64 * 1024
+    max_output_bytes: int = Field(
+        default=MAX_TOOL_RESPONSE_BYTES,
+        ge=1,
+        le=MAX_TOOL_RESPONSE_BYTES,
+    )
     cancellation: CancellationBehavior = CancellationBehavior.BEST_EFFORT
 
     @classmethod

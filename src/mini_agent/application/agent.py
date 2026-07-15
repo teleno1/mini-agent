@@ -6,12 +6,14 @@ import asyncio
 import hashlib
 import inspect
 import json
+import os
 import random
 import threading
+import warnings
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import cast
+from typing import Any, cast
 
 from mini_agent.application.permissions import PermissionPolicyGate, UserInteraction
 from mini_agent.application.ports import (
@@ -24,8 +26,14 @@ from mini_agent.application.ports import (
     SessionStore,
     SessionWriter,
 )
-from mini_agent.configuration import ConfigurationResolver, EffectiveConfiguration, PermissionMode
+from mini_agent.configuration import (
+    ConfigurationResolver,
+    EffectiveConfiguration,
+    PermissionMode,
+    redact_secrets,
+)
 from mini_agent.context import ContextBuilder, ContextFrame
+from mini_agent.domain.artifacts import ARTIFACT_MEDIA_TYPE, ARTIFACT_PREVIEW_BYTES
 from mini_agent.domain.messages import AssistantMessage, Message, ToolResultMessage, UserMessage
 from mini_agent.domain.plans import PlanSnapshot, PlanStep, PlanStepStatus
 from mini_agent.domain.reports import CompletionReport
@@ -40,9 +48,11 @@ from mini_agent.domain.streams import (
 )
 from mini_agent.domain.turns import InvalidStream, StreamFailed, close_agent_response
 from mini_agent.tools.contracts import (
+    MAX_TOOL_RESPONSE_BYTES,
     PermissionDecision,
     PermissionRequest,
     ToolCall,
+    ToolError,
     ToolOutcome,
     ToolRegistry,
     ToolResult,
@@ -477,6 +487,22 @@ class AgentTurnApplication:
                             else "read-only"
                         ),
                     )
+                    result, terminal_causation = self._materialize_tool_result(
+                        result,
+                        writer,
+                        configuration=effective_configuration,
+                        max_output_bytes=min(
+                            self._tool_registry.require(call.name).limits.max_output_bytes,
+                            MAX_TOOL_RESPONSE_BYTES,
+                        ),
+                        threshold=(
+                            effective_configuration.artifact_threshold_bytes
+                            if effective_configuration is not None
+                            else 32 * 1024
+                        ),
+                        turn_id=turn_id,
+                        causation_id=terminal_causation,
+                    )
                     terminal_event = self._append_tool_terminal(
                         writer,
                         result,
@@ -696,6 +722,76 @@ class AgentTurnApplication:
                 started_event.event_id if started_event else causation_id,
             )
 
+    def _materialize_tool_result(
+        self,
+        result: ToolResult,
+        writer: SessionWriter | None,
+        *,
+        configuration: EffectiveConfiguration | None,
+        max_output_bytes: int,
+        threshold: int,
+        turn_id: str,
+        causation_id: str | None,
+    ) -> tuple[ToolResult, str | None]:
+        """Redact a result and move its large serialized body behind an Artifact."""
+
+        redacted = _redact_tool_result(result, configuration)
+        content = redacted.text.encode("utf-8")
+        if len(content) > max_output_bytes:
+            bounded_preview = content[:ARTIFACT_PREVIEW_BYTES].decode("utf-8", errors="ignore")
+            return (
+                ToolResult.failed(
+                    ToolCall(
+                        tool_call_id=redacted.tool_call_id,
+                        name=redacted.tool_name,
+                        arguments={},
+                    ),
+                    category="tool-execution",
+                    code="output-limit",
+                    message="Tool output exceeded its absolute response limit",
+                    data={
+                        "output_bytes": len(content),
+                        "preview": bounded_preview,
+                        "truncated": True,
+                    },
+                ),
+                causation_id,
+            )
+        if len(content) <= threshold or writer is None:
+            return redacted, causation_id
+        try:
+            reference = writer.write_artifact(
+                content,
+                media_type=ARTIFACT_MEDIA_TYPE,
+            )
+            artifact_event = writer.append(
+                SessionEventType.ARTIFACT_WRITTEN,
+                {
+                    "tool_call_id": redacted.tool_call_id,
+                    "name": redacted.tool_name,
+                    "artifact": cast(dict[str, JSONValue], reference.as_dict()),
+                },
+                turn_id=turn_id,
+                causation_id=causation_id,
+                timestamp=self._clock.now(),
+            )
+        except Exception:
+            return (
+                ToolResult.failed(
+                    ToolCall(
+                        tool_call_id=redacted.tool_call_id,
+                        name=redacted.tool_name,
+                        arguments={},
+                    ),
+                    category="persistence",
+                    code="artifact-write-failed",
+                    message="large Tool Result could not be durably stored as an Artifact",
+                ),
+                causation_id,
+            )
+        artifact_result = redacted.model_copy(update={"data": {"artifact": reference.as_dict()}})
+        return artifact_result, artifact_event.event_id
+
     def _ensure_active_budget(self, started_at: datetime, max_active_seconds: int) -> None:
         elapsed = (self._clock.now() - started_at).total_seconds()
         if elapsed >= max_active_seconds:
@@ -756,6 +852,9 @@ class AgentTurnApplication:
                 "result_text": result.text,
             },
         )
+        artifact = result.data.get("artifact")
+        if isinstance(artifact, dict):
+            payload["artifact"] = cast(dict[str, JSONValue], artifact)
         return writer.append(
             event_type,
             payload,
@@ -810,6 +909,93 @@ class AgentTurnError(RuntimeError):
     """Raised when a Session already has an active Turn in this host."""
 
 
+def _redact_tool_result(
+    result: ToolResult,
+    configuration: EffectiveConfiguration | None,
+) -> ToolResult:
+    secrets = _known_sensitive_environment_values(configuration)
+    redacted_data, data_changed = _redact_value(result.data, None, secrets)
+    redacted_error = result.error
+    error_changed = False
+    if result.error is not None:
+        message = redact_secrets(result.error.message, secrets)
+        error_changed = message != result.error.message
+        if error_changed:
+            redacted_error = ToolError(
+                category=result.error.category,
+                code=result.error.code,
+                message=message,
+            )
+    if data_changed or error_changed:
+        warnings.warn(
+            "Tool output credential detection is best-effort; sensitive values were redacted",
+            UserWarning,
+            stacklevel=3,
+        )
+    if not isinstance(redacted_data, dict):
+        raise TypeError("Tool Result data must remain an object after redaction")
+    return result.model_copy(update={"data": redacted_data, "error": redacted_error})
+
+
+def _known_sensitive_environment_values(
+    configuration: EffectiveConfiguration | None,
+) -> tuple[str, ...]:
+    values: list[str] = []
+    if configuration is not None and configuration.api_key:
+        values.append(configuration.api_key)
+    for key, value in os.environ.items():
+        normalized = key.casefold().replace("-", "_")
+        if _is_sensitive_key(normalized) and value:
+            values.append(value)
+    return tuple(dict.fromkeys(values))
+
+
+def _redact_value(
+    value: object,
+    key: str | None,
+    secrets: tuple[str, ...],
+) -> tuple[object, bool]:
+    if key is not None and _is_sensitive_key(key):
+        return "<redacted>", value != "<redacted>"
+    if isinstance(value, str):
+        redacted = redact_secrets(value, secrets)
+        return redacted, redacted != value
+    if isinstance(value, dict):
+        changed = False
+        output: dict[str, Any] = {}
+        for raw_key, raw_value in value.items():
+            output_key = str(raw_key)
+            output_value, item_changed = _redact_value(raw_value, output_key, secrets)
+            output[output_key] = output_value
+            changed = changed or item_changed
+        return output, changed
+    if isinstance(value, list):
+        output_items: list[object] = []
+        changed = False
+        for item in value:
+            output_item, item_changed = _redact_value(item, None, secrets)
+            output_items.append(output_item)
+            changed = changed or item_changed
+        return output_items, changed
+    return value, False
+
+
+def _is_sensitive_key(key: str) -> bool:
+    normalized = key.casefold().replace("-", "_")
+    return any(
+        marker in normalized
+        for marker in (
+            "api_key",
+            "apikey",
+            "access_token",
+            "credential",
+            "password",
+            "secret",
+            "token",
+        )
+    )
+
+
 def _stream_output_bytes(event: StreamEvent) -> int:
     if isinstance(event, TextDelta):
         return len(event.text.encode("utf-8"))
@@ -830,7 +1016,7 @@ def _stream_has_model_output(events: list[StreamEvent]) -> bool:
 
 
 _PLAN_TOOL_NAMES = {
-    "inspect": frozenset({"read_file", "search_files"}),
+    "inspect": frozenset({"read_file", "read_artifact", "search_files"}),
     "change": frozenset({"apply_patch", "create_file"}),
     "verify": frozenset({"shell"}),
 }
@@ -928,7 +1114,9 @@ def _advance_plan(
             updated.append(step)
     if not matched:
         updated = list(plan.steps)
-    if result.outcome is ToolOutcome.SUCCESS:
+    if result.outcome is ToolOutcome.SUCCESS and not any(
+        step.status is PlanStepStatus.IN_PROGRESS for step in updated
+    ):
         for index, step in enumerate(updated):
             if step.status is PlanStepStatus.PENDING:
                 updated[index] = replace(

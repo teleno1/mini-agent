@@ -502,15 +502,28 @@ def initialize_project(workspace_root: Path | str, *, confirmed: bool) -> tuple[
 
 
 def redact_secrets(value: object, secrets: tuple[str, ...] = ()) -> str:
-    """Render diagnostics with known API keys and common credential forms removed."""
+    """Render data with known secrets and common credential forms removed.
+
+    Detection is intentionally conservative and best-effort; callers must not
+    treat a clean result as proof that no credential was present.
+    """
 
     text = str(value)
     candidates = tuple(secret for secret in secrets if secret)
     for secret in candidates:
         text = text.replace(secret, "<redacted>")
     text = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+", r"\1<redacted>", text)
-    text = re.sub(r"(?i)(api[_ -]?key\s*[:=]\s*)[^\s,;]+", r"\1<redacted>", text)
-    text = re.sub(r"\bsk-[A-Za-z0-9_-]{8,}\b", "<redacted>", text)
+    text = re.sub(
+        r"(?i)(api[_ -]?key\s*[:=]\s*)[\"']?[^\s,;\"']+",
+        r"\1<redacted>",
+        text,
+    )
+    text = re.sub(
+        r"\b(?:sk|pk|ghp|gho|github_pat|xox[baprs])[-_][A-Za-z0-9_-]{8,}\b",
+        "<redacted>",
+        text,
+    )
+    text = re.sub(r"\bAKIA[0-9A-Z]{16}\b", "<redacted>", text)
     return text
 
 
