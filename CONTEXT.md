@@ -44,6 +44,14 @@ The immutable, validated set of settings governing a Session at a given moment, 
 
 A capability exposed to the model with a name, description, validated input, permission requirement, and observable result.
 
+## Shell
+
+The host-controlled Tool that runs one bounded, non-interactive PowerShell or POSIX command in a validated Workspace-relative working directory. Shell execution is process-limited and permission-gated, but is not an operating-system sandbox.
+
+## Shell Command Classification
+
+The pure, explainable classification of a proposed Shell command as a recognized local read/build/test operation or a confirmation-gated or denied hazard such as chaining, redirection, network access, installation, deletion, an interpreter, or an unknown executable.
+
 ## Tool Call
 
 A model-requested invocation of a named Tool with a unique identifier and proposed arguments. It has no authority to run until validation and the Permission Policy allow it.

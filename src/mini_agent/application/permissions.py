@@ -106,7 +106,16 @@ class PermissionPolicyGate:
     def decide(self, request: PermissionRequest) -> PermissionDecision:
         key = self._grant_key(request)
         hazards = set(request.risk.hazards)
-        if hazards.intersection({"sensitive", "boundary-escape", "catastrophic", "hard-deny"}):
+        if hazards.intersection(
+            {
+                "sensitive",
+                "boundary-escape",
+                "catastrophic",
+                "hard-deny",
+                "interactive",
+                "detached",
+            }
+        ):
             return self._record(
                 PermissionDecision.DENY,
                 scope="none",
@@ -129,10 +138,10 @@ class PermissionPolicyGate:
         return self._confirm(request, key, rule=rule, reason=reason)
 
     def _mode_default(self, request: PermissionRequest) -> tuple[bool, str, str]:
+        hazards = set(request.risk.hazards)
         if request.risk.side_effect is SideEffectCategory.READ:
             return True, "safe-read", "safe Workspace read automatically authorized"
         if request.risk.side_effect is SideEffectCategory.WRITE:
-            hazards = set(request.risk.hazards)
             if self.mode in {
                 PermissionMode.AUTO_EDIT,
                 PermissionMode.FULL_AUTO,
@@ -156,6 +165,12 @@ class PermissionPolicyGate:
                 "Suggest mode requires confirmation for writes",
             )
         if self.mode is PermissionMode.FULL_AUTO:
+            if "recognized-local" in hazards:
+                return (
+                    True,
+                    "full-auto-recognized-local",
+                    "full-auto allows only a recognized local read, build, or test command",
+                )
             return (
                 False,
                 "shell-confirmation",

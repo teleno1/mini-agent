@@ -34,6 +34,18 @@ from mini_agent.tools.patches import (
     PatchInput,
     PatchOperation,
 )
+from mini_agent.tools.shell import (
+    DEFAULT_MAX_OUTPUT_BYTES,
+    DEFAULT_TIMEOUT_SECONDS,
+    MAX_OUTPUT_BYTES,
+    MAX_TIMEOUT_SECONDS,
+    ShellCommandClass,
+    ShellCommandClassification,
+    ShellInput,
+    ShellTool,
+    classify_shell_command,
+    filtered_child_environment,
+)
 from mini_agent.tools.workspace import (
     BinaryTargetError,
     SensitiveTargetError,
@@ -50,6 +62,10 @@ __all__ = [
     "CancellationBehavior",
     "CreateFileInput",
     "CreateFileTool",
+    "DEFAULT_MAX_OUTPUT_BYTES",
+    "DEFAULT_TIMEOUT_SECONDS",
+    "MAX_OUTPUT_BYTES",
+    "MAX_TIMEOUT_SECONDS",
     "NormalizedToolCall",
     "PermissionDecision",
     "PermissionRequest",
@@ -61,6 +77,10 @@ __all__ = [
     "RiskAssessment",
     "SearchFilesInput",
     "SearchFilesTool",
+    "ShellCommandClass",
+    "ShellCommandClassification",
+    "ShellInput",
+    "ShellTool",
     "SensitiveTargetError",
     "SideEffectCategory",
     "Tool",
@@ -76,4 +96,6 @@ __all__ = [
     "Workspace",
     "WorkspacePathError",
     "WorkspaceTarget",
+    "classify_shell_command",
+    "filtered_child_environment",
 ]
