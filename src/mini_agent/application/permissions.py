@@ -229,6 +229,13 @@ class PermissionPolicyGate:
                 rule="user-allow-once",
                 reason="user allowed this exact Tool Call once",
             )
+        if choice is ConfirmationChoice.CANCEL:
+            return self._record(
+                PermissionDecision.CANCEL,
+                scope="none",
+                rule="user-cancel",
+                reason="user cancelled the pending Tool Call",
+            )
         return self._record(
             PermissionDecision.DENY,
             scope="none",
@@ -283,6 +290,8 @@ def _normalize_choice(
         "allow-session",
     }:
         return ConfirmationChoice.ALLOW_FOR_SESSION
+    if normalized in {"cancel", "interrupt", "quit"}:
+        return ConfirmationChoice.CANCEL
     return ConfirmationChoice.DENY
 
 

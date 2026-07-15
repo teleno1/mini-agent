@@ -9,6 +9,7 @@ from mini_agent.application.agent import (
     SafeReadPermissionGate,
     TurnBudgets,
 )
+from mini_agent.application.cancellation import ForcedInterrupt, InterruptController
 from mini_agent.application.permissions import (
     ConfirmationChoice,
     PermissionGrant,
@@ -24,6 +25,7 @@ __all__ = [
     "AgentTurnError",
     "AgentTurnApplication",
     "AgentTurnResult",
+    "ForcedInterrupt",
     "CompletionReport",
     "ConfirmationChoice",
     "PermissionPolicyGate",
@@ -35,5 +37,6 @@ __all__ = [
     "ReadOnlyPermissionGate",
     "SafeReadPermissionGate",
     "TurnBudgets",
+    "InterruptController",
     "UserInteraction",
 ]

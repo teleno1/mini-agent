@@ -33,6 +33,7 @@ from mini_agent.configuration import (
     redact_secrets,
 )
 from mini_agent.context import ContextBudgetError, ContextBuilder, ContextFrame
+from mini_agent.diagnostics import DiagnosticLogger, failure_from_exception
 from mini_agent.domain.artifacts import ARTIFACT_MEDIA_TYPE, ARTIFACT_PREVIEW_BYTES
 from mini_agent.domain.compaction import (
     ContextCompactionError,
@@ -54,7 +55,7 @@ from mini_agent.domain.streams import (
     ToolCallCompleted,
     ToolCallStarted,
 )
-from mini_agent.domain.turns import InvalidStream, StreamFailed, close_agent_response
+from mini_agent.domain.turns import close_agent_response
 from mini_agent.tools.contracts import (
     MAX_TOOL_RESPONSE_BYTES,
     PermissionDecision,
@@ -164,6 +165,7 @@ class AgentTurnApplication:
         budgets: TurnBudgets | None = None,
         context_compactor: ContextCompactor | None = None,
         retry_sleep: Callable[[float], Awaitable[object]] = asyncio.sleep,
+        diagnostic_logger: DiagnosticLogger | None = None,
     ) -> None:
         self._provider = provider
         self._workspace = workspace
@@ -186,6 +188,10 @@ class AgentTurnApplication:
         self._active_sessions: set[str] = set()
         self._active_sessions_lock = threading.Lock()
         self._retry_sleep = retry_sleep
+        self._diagnostic_logger = diagnostic_logger or DiagnosticLogger(
+            workspace.root,
+            id_generator=id_generator,
+        )
 
     def _turn_budgets(self, configuration: EffectiveConfiguration | None) -> TurnBudgets:
         if self._budgets is not None:
@@ -242,6 +248,8 @@ class AgentTurnApplication:
         output_bytes = 0
         plan: PlanSnapshot | None = None
         tool_observations: list[tuple[ToolCall, ToolResult]] = []
+        active_request_event: SessionEvent | None = None
+        last_failure: Failure | None = None
         effective_configuration = self._configuration
 
         try:
@@ -286,8 +294,13 @@ class AgentTurnApplication:
             context_history = history
             budgets = self._turn_budgets(effective_configuration)
         except BaseException as exc:
+            failure = self._report_failure(
+                exc,
+                session_id=resolved_session_id,
+                turn_id=turn_id,
+            )
             if writer is not None:
-                self._record_failed_turn(writer, turn_id, None, exc)
+                self._record_failed_turn(writer, turn_id, active_request_event, failure)
                 writer.close()
             self._release_active_session(resolved_session_id)
             raise
@@ -307,8 +320,13 @@ class AgentTurnApplication:
                 else self._workspace
             )
         except BaseException as exc:
+            failure = self._report_failure(
+                exc,
+                session_id=resolved_session_id,
+                turn_id=turn_id,
+            )
             if writer is not None:
-                self._record_failed_turn(writer, turn_id, None, exc)
+                self._record_failed_turn(writer, turn_id, None, failure)
                 writer.close()
             self._release_active_session(resolved_session_id)
             raise
@@ -352,6 +370,7 @@ class AgentTurnApplication:
                         causation_id=causation_id,
                         timestamp=self._clock.now(),
                     )
+                    active_request_event = request_event
                 else:
                     request_event = None
 
@@ -368,26 +387,40 @@ class AgentTurnApplication:
                         if output_bytes > budgets.max_output_bytes:
                             raise AgentLimitError("model output budget exhausted")
                         if on_event is not None:
-                            observed = on_event(event)
-                            if inspect.isawaitable(observed):
-                                await observed
+                            try:
+                                observed = on_event(event)
+                                if inspect.isawaitable(observed):
+                                    await observed
+                            except Exception:
+                                # Rendering is an observation path.  A broken
+                                # stdout sink must not change durable model
+                                # semantics or trigger a false retry.
+                                pass
                     response = close_agent_response(tuple(stream_events))
                 except BaseException as exc:
+                    failure = self._report_failure(
+                        exc,
+                        session_id=resolved_session_id,
+                        turn_id=turn_id,
+                        request_id=request_id,
+                    )
+                    last_failure = failure
                     if writer is not None and request_event is not None:
+                        failure_payload = cast(dict[str, JSONValue], failure.as_dict())
                         writer.append(
                             SessionEventType.MODEL_REQUEST_FAILED,
-                            {**_failure_payload(exc), "request_id": request_id},
+                            {**failure_payload, "request_id": request_id},
                             turn_id=turn_id,
                             causation_id=request_event.event_id,
                             timestamp=self._clock.now(),
                         )
+                        active_request_event = None
                     if (
-                        isinstance(exc, StreamFailed)
-                        and exc.event.failure.retryable
+                        _is_safe_provider_retry(failure)
                         and not _stream_has_model_output(stream_events)
                         and retry_count < budgets.max_retries
                     ):
-                        await self._wait_before_retry(exc.event.failure, retry_count)
+                        await self._wait_before_retry(failure, retry_count)
                         retry_count += 1
                         continue
                     raise
@@ -410,6 +443,7 @@ class AgentTurnApplication:
                         causation_id=request_event.event_id,
                         timestamp=self._clock.now(),
                     )
+                    active_request_event = None
                     assistant_event = writer.append(
                         SessionEventType.ASSISTANT_MESSAGE,
                         _assistant_payload(response.message),
@@ -561,8 +595,15 @@ class AgentTurnApplication:
                 continue
             raise AgentLimitError("model request budget exhausted")
         except BaseException as exc:
+            failure = last_failure or self._report_failure(
+                exc,
+                session_id=resolved_session_id,
+                turn_id=turn_id,
+                request_id=_event_request_id(active_request_event),
+                tool_call_id=getattr(exc, "tool_call_id", None),
+            )
             if writer is not None:
-                self._record_failed_turn(writer, turn_id, None, exc)
+                self._record_failed_turn(writer, turn_id, active_request_event, failure)
             raise
         finally:
             if writer is not None:
@@ -793,6 +834,20 @@ class AgentTurnApplication:
             if preflight_failure is not None
             else permission_gate.decide(permission_request)
         )
+        if inspect.isawaitable(decision):
+            try:
+                decision = await decision
+            except asyncio.CancelledError:
+                return (
+                    ToolResult.failed(
+                        call,
+                        outcome=ToolOutcome.CANCELLED,
+                        category="cancellation",
+                        code="permission-interrupted",
+                        message="Tool permission was interrupted before execution",
+                    ),
+                    causation_id,
+                )
         if preflight_failure is None and decision is PermissionDecision.ALLOW:
             if _argument_hash(validated.call) != authorized_argument_hash:
                 preflight_failure = ToolResult.failed(
@@ -851,6 +906,17 @@ class AgentTurnApplication:
                 preflight_failure,
                 validated_event.event_id if validated_event else causation_id,
             )
+        if decision is PermissionDecision.CANCEL:
+            return (
+                ToolResult.failed(
+                    call,
+                    outcome=ToolOutcome.CANCELLED,
+                    category="cancellation",
+                    code="permission-cancelled",
+                    message="Tool permission was cancelled by the user",
+                ),
+                validated_event.event_id if validated_event else causation_id,
+            )
         if decision is not PermissionDecision.ALLOW:
             return (
                 ToolResult.failed(
@@ -879,9 +945,13 @@ class AgentTurnApplication:
             return (
                 ToolResult.failed(
                     call,
-                    category="tool-execution",
+                    outcome=ToolOutcome.INTERRUPTED,
+                    category="tool-timeout",
                     code="timeout",
-                    message="Tool execution exceeded its time limit",
+                    message=(
+                        "Tool execution exceeded its time limit; side effects could not be "
+                        "proven to have stopped"
+                    ),
                 ),
                 started_event.event_id if started_event else causation_id,
             )
@@ -1040,6 +1110,26 @@ class AgentTurnApplication:
         artifact = result.data.get("artifact")
         if isinstance(artifact, dict):
             payload["artifact"] = cast(dict[str, JSONValue], artifact)
+        if result.outcome is not ToolOutcome.SUCCESS and result.error is not None:
+            failure = Failure(
+                category=_tool_failure_category(result.error.category),
+                code=result.error.code,
+                source=result.tool_name,
+                redacted_description=redact_secrets(result.error.message),
+                retryable=False,
+                required_user_action=(
+                    "inspect the diagnostic error ID"
+                    if result.outcome not in {ToolOutcome.DENIED, ToolOutcome.CANCELLED}
+                    else "review the Tool decision or retry manually"
+                ),
+                details={"outcome": result.outcome.value},
+                session_id=writer.session_id,
+                turn_id=turn_id,
+                tool_call_id=result.tool_call_id,
+            )
+            if self._diagnostic_logger is not None:
+                failure = self._diagnostic_logger.record(failure)
+            payload["failure"] = cast(dict[str, JSONValue], failure.as_dict())
         return writer.append(
             event_type,
             payload,
@@ -1071,19 +1161,60 @@ class AgentTurnApplication:
         writer: SessionWriter,
         turn_id: str,
         request_event: SessionEvent | None,
-        exc: BaseException,
+        failure: Failure,
     ) -> None:
+        if (
+            failure.category == "persistence"
+            and failure.details.get("durability_uncertain") is True
+        ):
+            # The failed append may have reached storage but not become
+            # durable.  A compensating terminal event would itself be unsafe.
+            return
+        if any(
+            event.turn_id == turn_id
+            and event.event_type in {SessionEventType.TURN_COMPLETED, SessionEventType.TURN_FAILED}
+            for event in writer.events
+        ):
+            return
         try:
             causation_id = request_event.event_id if request_event is not None else None
+            failure_payload = cast(dict[str, JSONValue], failure.as_dict())
             writer.append(
                 SessionEventType.TURN_FAILED,
-                {**_failure_payload(exc), "outcome": "failed"},
+                {**failure_payload, "outcome": "failed"},
                 turn_id=turn_id,
                 causation_id=causation_id,
                 timestamp=self._clock.now(),
             )
-        except Exception:
-            return
+        except Exception as exc:
+            if self._diagnostic_logger is not None:
+                self._diagnostic_logger.record_exception(
+                    exc,
+                    session_id=writer.session_id,
+                    turn_id=turn_id,
+                    request_id=failure.request_id,
+                    tool_call_id=failure.tool_call_id,
+                )
+
+    def _report_failure(
+        self,
+        exc: BaseException,
+        *,
+        session_id: str,
+        turn_id: str,
+        request_id: str | None = None,
+        tool_call_id: str | None = None,
+    ) -> Failure:
+        failure = failure_from_exception(
+            exc,
+            session_id=session_id,
+            turn_id=turn_id,
+            request_id=request_id,
+            tool_call_id=tool_call_id,
+        )
+        if self._diagnostic_logger is not None:
+            failure = self._diagnostic_logger.record(failure)
+        return failure
 
 
 class AgentLimitError(RuntimeError):
@@ -1198,6 +1329,32 @@ def _stream_has_model_output(events: list[StreamEvent]) -> bool:
         isinstance(event, (TextDelta, ToolCallArgumentDelta, ToolCallStarted, ToolCallCompleted))
         for event in events
     )
+
+
+def _is_safe_provider_retry(failure: Failure) -> bool:
+    """Allow only transient, pre-output Provider failures to be retried."""
+
+    if not failure.retryable or failure.category not in {
+        "rate-limit",
+        "network",
+        "provider-timeout",
+    }:
+        return False
+    return failure.details.get("automatic_retries_exhausted") is not True
+
+
+def _tool_failure_category(category: str) -> str:
+    if category in {"permission", "permission-denial"}:
+        return "permission-denial"
+    if category in {"timeout", "tool-timeout"}:
+        return "tool-timeout"
+    if category in {"tool-validation", "validation"}:
+        return "tool-validation"
+    if category in {"persistence"}:
+        return "persistence"
+    if category in {"cancellation"}:
+        return "cancellation"
+    return "tool-execution"
 
 
 _PLAN_TOOL_NAMES = {
@@ -1505,41 +1662,8 @@ def _selected_context_events(
     )
 
 
-def _failure_payload(exc: BaseException) -> dict[str, JSONValue]:
-    if isinstance(exc, asyncio.CancelledError):
-        return {
-            "category": "cancellation",
-            "code": "turn-cancelled",
-            "source": "application",
-            "description": "the active Turn was cancelled by the host or user",
-            "retryable": False,
-            "required_user_action": "inspect the Session before starting another Turn",
-        }
-    if isinstance(exc, StreamFailed):
-        failure = exc.event.failure
-        return {
-            "category": failure.category,
-            "code": failure.code,
-            "source": failure.source,
-            "description": failure.redacted_description,
-            "retryable": failure.retryable,
-            "required_user_action": failure.required_user_action,
-            "cause": failure.cause,
-        }
-    if isinstance(exc, InvalidStream):
-        return {
-            "category": "provider-protocol",
-            "code": "invalid-normalized-stream",
-            "source": "application",
-            "description": "the Provider emitted an illegal normalized stream",
-            "retryable": False,
-            "required_user_action": "inspect the Provider contract",
-        }
-    return {
-        "category": "agent",
-        "code": "agent-error",
-        "source": "application",
-        "description": f"{type(exc).__name__}: {str(exc)[:200]}",
-        "retryable": False,
-        "required_user_action": "inspect the diagnostic error ID",
-    }
+def _event_request_id(event: SessionEvent | None) -> str | None:
+    if event is None:
+        return None
+    value = event.payload.get("request_id")
+    return value if isinstance(value, str) else None

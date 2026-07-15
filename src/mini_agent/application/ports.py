@@ -55,6 +55,12 @@ class SessionWriter(Protocol):
     """The durable-before-side-effect seam used by the Turn application."""
 
     @property
+    def session_id(self) -> str:
+        """Stable Session identity owned by this writer."""
+
+        ...
+
+    @property
     def events(self) -> tuple[SessionEvent, ...]:
         """Events already durable in this writer."""
 

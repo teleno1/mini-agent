@@ -284,7 +284,11 @@ class SearchFilesTool(_WorkspaceTool):
             return self._failure(call_id, self.name, "regex", "search pattern is invalid")
         except subprocess.TimeoutExpired:
             return self._failure(
-                call_id, self.name, "timeout", "repository search exceeded its time limit"
+                call_id,
+                self.name,
+                "timeout",
+                "repository search exceeded its time limit",
+                category="tool-timeout",
             )
         except OSError:
             return self._failure(

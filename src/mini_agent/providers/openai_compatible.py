@@ -13,7 +13,7 @@ import random
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import TracebackType
 from typing import Any, Self, cast
 from urllib.parse import urlsplit
@@ -255,6 +255,8 @@ class OpenAICompatibleModelProvider:
             fallback_request_id=self._id_generator.new_id("request"),
         )
         attempt = 0
+        attempt_request_id = fallback_request_id
+        attempt_request_ids = [attempt_request_id]
         while True:
             started = False
             try:
@@ -262,7 +264,7 @@ class OpenAICompatibleModelProvider:
                 async with self._response_stream(payload) as response:
                     if response.status_code < 200 or response.status_code >= 300:
                         raise await self._http_failure(response)
-                    state = _ResponseState(fallback_request_id)
+                    state = _ResponseState(attempt_request_id)
                     async for data in _iter_sse_data(response, self.timeouts, deadline=deadline):
                         if data == "[DONE]":
                             for event in _finish_response(state):
@@ -281,8 +283,18 @@ class OpenAICompatibleModelProvider:
                 if not started and exc.failure.retryable and attempt < self.max_retries:
                     await self._wait_before_retry(attempt, exc.retry_after)
                     attempt += 1
+                    attempt_request_id = self._id_generator.new_id("request")
+                    attempt_request_ids.append(attempt_request_id)
                     continue
-                yield ResponseFailed(exc.failure)
+                yield ResponseFailed(
+                    _provider_attempt_failure(
+                        exc.failure,
+                        attempt,
+                        self.max_retries,
+                        started,
+                        attempt_request_ids,
+                    )
+                )
                 return
             except TimeoutError:
                 failure = _stream_failure(
@@ -293,8 +305,18 @@ class OpenAICompatibleModelProvider:
                 if not started and attempt < self.max_retries:
                     await self._wait_before_retry(attempt, None)
                     attempt += 1
+                    attempt_request_id = self._id_generator.new_id("request")
+                    attempt_request_ids.append(attempt_request_id)
                     continue
-                yield ResponseFailed(failure)
+                yield ResponseFailed(
+                    _provider_attempt_failure(
+                        failure,
+                        attempt,
+                        self.max_retries,
+                        started,
+                        attempt_request_ids,
+                    )
+                )
                 return
             except httpx.TimeoutException as exc:
                 failure = _failure(
@@ -308,8 +330,18 @@ class OpenAICompatibleModelProvider:
                 if not started and attempt < self.max_retries:
                     await self._wait_before_retry(attempt, None)
                     attempt += 1
+                    attempt_request_id = self._id_generator.new_id("request")
+                    attempt_request_ids.append(attempt_request_id)
                     continue
-                yield ResponseFailed(failure)
+                yield ResponseFailed(
+                    _provider_attempt_failure(
+                        failure,
+                        attempt,
+                        self.max_retries,
+                        started,
+                        attempt_request_ids,
+                    )
+                )
                 return
 
             except httpx.HTTPError as exc:
@@ -324,8 +356,18 @@ class OpenAICompatibleModelProvider:
                 if not started and attempt < self.max_retries:
                     await self._wait_before_retry(attempt, None)
                     attempt += 1
+                    attempt_request_id = self._id_generator.new_id("request")
+                    attempt_request_ids.append(attempt_request_id)
                     continue
-                yield ResponseFailed(failure)
+                yield ResponseFailed(
+                    _provider_attempt_failure(
+                        failure,
+                        attempt,
+                        self.max_retries,
+                        started,
+                        attempt_request_ids,
+                    )
+                )
                 return
 
             except Exception as exc:
@@ -337,7 +379,15 @@ class OpenAICompatibleModelProvider:
                     action="inspect the diagnostic error ID",
                     cause=type(exc).__name__,
                 )
-                yield ResponseFailed(failure)
+                yield ResponseFailed(
+                    _provider_attempt_failure(
+                        failure,
+                        attempt,
+                        self.max_retries,
+                        started,
+                        attempt_request_ids,
+                    )
+                )
                 return
 
     @asynccontextmanager
@@ -979,6 +1029,28 @@ def _failure(
         required_user_action=action,
         cause=cause,
     )
+
+
+def _provider_attempt_failure(
+    failure: Failure,
+    attempt: int,
+    max_retries: int,
+    started: bool,
+    attempt_request_ids: list[str],
+) -> Failure:
+    """Expose provider-level retry exhaustion to the outer Agent Loop."""
+
+    if started or not failure.retryable:
+        return failure
+    details = dict(failure.details)
+    details.update(
+        {
+            "provider_attempts": attempt + 1,
+            "automatic_retries_exhausted": attempt >= max_retries,
+            "provider_request_ids": list(attempt_request_ids),
+        }
+    )
+    return replace(failure, details=details)
 
 
 def _validated_base_url(value: str) -> str:

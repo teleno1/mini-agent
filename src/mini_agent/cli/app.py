@@ -16,6 +16,7 @@ from mini_agent import __version__
 from mini_agent.adapters.clocks import SystemClock
 from mini_agent.adapters.ids import UUIDIdGenerator
 from mini_agent.adapters.session_store import SessionStore
+from mini_agent.application.cancellation import ForcedInterrupt, InterruptController
 from mini_agent.application.ports import ContextBuilder as ContextBuilderPort
 from mini_agent.application.rendering import BoundedStreamRenderer
 from mini_agent.application.turns import TextTurnApplication
@@ -25,6 +26,7 @@ from mini_agent.configuration import (
     initialize_project,
 )
 from mini_agent.context import ContextBuilder
+from mini_agent.diagnostics import DiagnosticLogger
 from mini_agent.providers.fake import ScriptedFakeModelProvider
 from mini_agent.providers.openai_compatible import OpenAICompatibleModelProvider
 
@@ -71,7 +73,17 @@ async def _run_turn(
 ) -> None:
     ids = UUIDIdGenerator()
     resolver = ConfigurationResolver(workspace, cli_values=cli_values)
-    configuration = resolver.resolve()
+    diagnostics = DiagnosticLogger(workspace, id_generator=ids)
+    try:
+        configuration = resolver.resolve()
+    except ConfigurationError as exc:
+        failure = diagnostics.record_exception(exc)
+        typer.echo(
+            f"Configuration failed [{failure.error_id or 'unavailable'}]: "
+            "correct the configuration source and retry.",
+            err=True,
+        )
+        raise typer.Exit(code=2) from exc
     provider: OpenAICompatibleModelProvider | ScriptedFakeModelProvider
     if configuration.api_key:
         provider = OpenAICompatibleModelProvider.from_configuration(configuration)
@@ -89,8 +101,8 @@ async def _run_turn(
         context_builder=context_builder,
         configuration=configuration,
         configuration_resolver=resolver,
+        diagnostic_logger=diagnostics,
     )
-
     console.print(f"You: {task}", markup=False, highlight=False)
     console.print("Agent: ", end="", markup=False, highlight=False)
     renderer = BoundedStreamRenderer(
@@ -98,13 +110,62 @@ async def _run_turn(
         plain_sink=lambda text: typer.echo(text, nl=False),
         max_queue_size=64,
     )
+    turn_task = asyncio.create_task(
+        application.run(task, on_event=renderer.observe, session_id=session_id)
+    )
+    controller = InterruptController(
+        turn_task,
+        on_acknowledged=lambda: console.print(
+            "\nCancelling; allowing cleanup...", markup=False, highlight=False
+        ),
+    )
+    controller.install()
+    cancellation_wait: asyncio.Task[bool] | None = None
     try:
-        await application.run(task, on_event=renderer.observe, session_id=session_id)
+        cancellation_wait = asyncio.create_task(controller.cancel_event.wait())
+        done, _ = await asyncio.wait(
+            {turn_task, cancellation_wait}, return_when=asyncio.FIRST_COMPLETED
+        )
+        if cancellation_wait in done and turn_task not in done:
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(turn_task), timeout=controller.cleanup_seconds
+                )
+            except TimeoutError:
+                turn_task.cancel()
+                raise typer.Exit(code=ForcedInterrupt.exit_code if controller.forced else 1)
+        else:
+            await turn_task
+        cancellation_wait.cancel()
+        if controller.forced:
+            raise typer.Exit(code=ForcedInterrupt.exit_code)
+    except asyncio.CancelledError:
+        if controller.forced:
+            raise typer.Exit(code=ForcedInterrupt.exit_code)
+        console.print("\nCancelled. The Session was not reported as successful.")
+    except typer.Exit:
+        raise
+    except Exception:
+        error_id = diagnostics.last_error_id or "unavailable"
+        console.print(
+            f"\nError [{error_id}]: the Turn failed; inspect it with "
+            f"`mini-agent doctor {error_id}`.",
+            markup=False,
+            highlight=False,
+        )
+        raise typer.Exit(code=1)
     finally:
+        if cancellation_wait is not None:
+            cancellation_wait.cancel()
+        if not turn_task.done():
+            turn_task.cancel()
+        controller.uninstall()
         await renderer.finish()
         console.print()
         if isinstance(provider, OpenAICompatibleModelProvider):
             await provider.aclose()
+        if controller.forced:
+            raise typer.Exit(code=ForcedInterrupt.exit_code)
 
 
 def _store_for_current_workspace(workspace: Path | None = None) -> SessionStore:
@@ -161,6 +222,25 @@ def list_sessions() -> None:
         typer.echo(f"{session.session_id}\t{session.status}\t{preview}")
 
 
+@app.command("doctor")
+def doctor(
+    context: typer.Context,
+    error_id: Annotated[str, typer.Argument(help="The diagnostic error ID to resolve.")],
+    workspace: Annotated[
+        Path | None,
+        typer.Option("--workspace", help="Workspace containing the diagnostic logs."),
+    ] = None,
+) -> None:
+    """Show one redacted diagnostic record by error ID."""
+
+    selected_workspace = workspace or context.obj.get("workspace", Path.cwd())
+    record = DiagnosticLogger(Path(selected_workspace)).find(error_id)
+    if record is None:
+        typer.echo(f"No diagnostic record found for {error_id}.", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True))
+
+
 @app.command("resume")
 def resume_session(
     session_id: Annotated[str, typer.Argument(help="The Session ID to resume.")],
@@ -210,12 +290,14 @@ def _callback(
         ),
     ] = None,
 ) -> None:
+    context.ensure_object(dict)
+    context.obj["workspace"] = (workspace or Path.cwd()).resolve()
     if context.invoked_subcommand is not None:
         return
     task = " ".join(context.args) if context.args else None
     if task is None:
         task = typer.prompt("You")
-    root = (workspace or Path.cwd()).resolve()
+    root = Path(context.obj["workspace"])
     cli_values: dict[str, object] = {
         key: value
         for key, value in {

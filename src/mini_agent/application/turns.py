@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
+import random
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
+from typing import cast
 
 from mini_agent.application.ports import (
     Clock,
@@ -20,10 +25,11 @@ from mini_agent.application.ports import (
 )
 from mini_agent.configuration import ConfigurationResolver, EffectiveConfiguration
 from mini_agent.context import ContextFrame
+from mini_agent.diagnostics import DiagnosticLogger, failure_from_exception
 from mini_agent.domain.messages import AssistantMessage, Message, UserMessage
 from mini_agent.domain.sessions import JSONValue, SessionEvent, SessionEventType
-from mini_agent.domain.streams import StreamEvent
-from mini_agent.domain.turns import InvalidStream, StreamFailed, close_text_response
+from mini_agent.domain.streams import Failure, StreamEvent, TextDelta
+from mini_agent.domain.turns import close_text_response
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +60,9 @@ class TextTurnApplication:
         configuration: EffectiveConfiguration | None = None,
         configuration_resolver: ConfigurationResolver | None = None,
         request_targets: tuple[str, ...] = (),
+        diagnostic_logger: DiagnosticLogger | None = None,
+        max_retries: int = 2,
+        retry_sleep: Callable[[float], Awaitable[object]] = asyncio.sleep,
     ) -> None:
         self._provider = provider
         self._clock = clock
@@ -63,6 +72,15 @@ class TextTurnApplication:
         self._configuration = configuration
         self._configuration_resolver = configuration_resolver
         self._request_targets = request_targets
+        diagnostic_root = getattr(session_store, "workspace_root", Path.cwd())
+        self._diagnostic_logger = diagnostic_logger or DiagnosticLogger(
+            Path(diagnostic_root),
+            id_generator=id_generator,
+        )
+        if max_retries < 0 or max_retries > 2:
+            raise ValueError("text Turn retries must be between zero and two")
+        self._max_retries = max_retries
+        self._retry_sleep = retry_sleep
 
     async def run(
         self,
@@ -169,13 +187,14 @@ class TextTurnApplication:
                     timestamp=self._clock.now(),
                 )
         except BaseException as exc:
+            failure = self._report_failure(exc, session_id=session_id, turn_id=turn_id)
             if writer is not None:
                 self._record_failed_turn(
                     writer,
                     turn_id=turn_id,
                     request_started=request_started,
                     request_completed=request_completed,
-                    cause=_failure_payload(exc),
+                    failure=failure,
                 )
                 writer.close()
             raise
@@ -195,15 +214,70 @@ class TextTurnApplication:
         else:
             request_messages = (*history, user_message)
 
+        retry_count = 0
+        response = None
         try:
-            async for event in self._provider.stream(request_messages):
-                events.append(event)
-                if on_event is not None:
-                    observed = on_event(event)
-                    if inspect.isawaitable(observed):
-                        await observed
+            while True:
+                stream_events: list[StreamEvent] = []
+                try:
+                    async for event in self._provider.stream(request_messages):
+                        stream_events.append(event)
+                        if on_event is not None:
+                            try:
+                                observed = on_event(event)
+                                if inspect.isawaitable(observed):
+                                    await observed
+                            except Exception:
+                                # A broken stdout/renderer must not turn a valid model
+                                # response into a false Provider failure.
+                                pass
+                    response = close_text_response(tuple(stream_events))
+                    events.extend(stream_events)
+                    break
+                except BaseException as exc:
+                    failure = self._report_failure(
+                        exc,
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        request_id=_event_request_id(request_started),
+                    )
+                    if writer is not None and request_started is not None:
+                        failure_payload = cast(dict[str, JSONValue], failure.as_dict())
+                        writer.append(
+                            SessionEventType.MODEL_REQUEST_FAILED,
+                            {
+                                **failure_payload,
+                                "request_id": request_started.payload["request_id"],
+                            },
+                            turn_id=turn_id,
+                            causation_id=request_started.event_id,
+                            timestamp=self._clock.now(),
+                        )
+                        request_started = None
+                    if (
+                        _safe_text_retry(failure)
+                        and not _stream_has_output(stream_events)
+                        and retry_count < self._max_retries
+                    ):
+                        await self._wait_before_retry(failure, retry_count)
+                        retry_count += 1
+                        if writer is not None:
+                            retry_request_id = self._id_generator.new_id("request")
+                            request_started = writer.append(
+                                SessionEventType.MODEL_REQUEST_STARTED,
+                                {
+                                    "request_id": retry_request_id,
+                                    "message_count": len(history) + 1,
+                                },
+                                turn_id=turn_id,
+                                causation_id=turn_started.event_id if turn_started else None,
+                                timestamp=self._clock.now(),
+                            )
+                        continue
+                    raise
 
-            response = close_text_response(tuple(events))
+            if response is None:
+                raise RuntimeError("Provider returned no response")
             completed_at = self._clock.now()
             if writer is not None and request_started is not None:
                 completed_event = writer.append(
@@ -248,18 +322,32 @@ class TextTurnApplication:
                 stream_events=tuple(events),
             )
         except BaseException as exc:
+            failure = self._report_failure(
+                exc,
+                session_id=session_id,
+                turn_id=turn_id,
+                request_id=_event_request_id(request_started),
+            )
             if writer is not None and turn_started is not None:
                 self._record_failed_turn(
                     writer,
                     turn_id=turn_id,
                     request_started=request_started,
                     request_completed=request_completed,
-                    cause=_failure_payload(exc),
+                    failure=failure,
                 )
             raise
         finally:
             if writer is not None:
                 writer.close()
+
+    async def _wait_before_retry(self, failure: Failure, attempt: int) -> None:
+        if failure.retry_after_seconds is not None:
+            delay = min(failure.retry_after_seconds, 60.0)
+        else:
+            base = min(60.0, 0.25 * (2**attempt))
+            delay = random.uniform(base * 0.5, base * 1.5)
+        await self._retry_sleep(delay)
 
     def _build_context_frame(
         self,
@@ -290,17 +378,33 @@ class TextTurnApplication:
         turn_id: str,
         request_started: SessionEvent | None,
         request_completed: bool,
-        cause: dict[str, JSONValue],
+        failure: Failure,
     ) -> None:
         # Session persistence itself is the safety boundary.  If it is already
         # broken, the original exception remains the one reported to callers.
+        if (
+            failure.category == "persistence"
+            and failure.details.get("durability_uncertain") is True
+        ):
+            return
         timestamp = self._clock.now()
         try:
+            if any(
+                event.turn_id == turn_id
+                and event.event_type
+                in {SessionEventType.TURN_COMPLETED, SessionEventType.TURN_FAILED}
+                for event in writer.events
+            ):
+                return
             causation_id = request_started.event_id if request_started is not None else None
+            payload = cast(dict[str, JSONValue], failure.as_dict())
             if request_started is not None and not request_completed:
                 failed_request = writer.append(
                     SessionEventType.MODEL_REQUEST_FAILED,
-                    {**cause, "request_id": request_started.payload["request_id"]},
+                    {
+                        **payload,
+                        "request_id": request_started.payload["request_id"],
+                    },
                     turn_id=turn_id,
                     causation_id=causation_id,
                     timestamp=timestamp,
@@ -308,44 +412,60 @@ class TextTurnApplication:
                 causation_id = failed_request.event_id
             writer.append(
                 SessionEventType.TURN_FAILED,
-                {**cause, "outcome": "failed"},
+                {**payload, "outcome": "failed"},
                 turn_id=turn_id,
                 causation_id=causation_id,
                 timestamp=timestamp,
             )
-        except Exception:
-            return
+        except Exception as exc:
+            if self._diagnostic_logger is not None:
+                self._diagnostic_logger.record_exception(
+                    exc,
+                    session_id=writer.session_id,
+                    turn_id=turn_id,
+                )
+
+    def _report_failure(
+        self,
+        exc: BaseException,
+        *,
+        session_id: str,
+        turn_id: str,
+        request_id: str | None = None,
+    ) -> Failure:
+        failure = failure_from_exception(
+            exc,
+            session_id=session_id,
+            turn_id=turn_id,
+            request_id=request_id,
+        )
+        if self._diagnostic_logger is not None:
+            failure = self._diagnostic_logger.record(failure)
+        return failure
 
 
-def _failure_payload(exc: BaseException) -> dict[str, JSONValue]:
-    if isinstance(exc, StreamFailed):
-        failure = exc.event.failure
-        return {
-            "category": failure.category,
-            "code": failure.code,
-            "source": failure.source,
-            "description": failure.redacted_description,
-            "retryable": failure.retryable,
-            "required_user_action": failure.required_user_action,
-            "cause": failure.cause,
+def _safe_text_retry(failure: Failure) -> bool:
+    return (
+        failure.retryable
+        and failure.details.get("automatic_retries_exhausted") is not True
+        and failure.category
+        in {
+            "rate-limit",
+            "network",
+            "provider-timeout",
         }
-    if isinstance(exc, InvalidStream):
-        return {
-            "category": "provider-protocol",
-            "code": "invalid-normalized-stream",
-            "source": "application",
-            "description": "the Provider emitted an illegal normalized stream",
-            "retryable": False,
-            "required_user_action": "inspect the Provider contract",
-        }
-    return {
-        "category": "provider",
-        "code": "provider-error",
-        "source": "application",
-        "description": f"{type(exc).__name__}: {str(exc)[:200]}",
-        "retryable": False,
-        "required_user_action": "inspect the diagnostic error ID",
-    }
+    )
+
+
+def _stream_has_output(events: list[StreamEvent]) -> bool:
+    return any(isinstance(event, TextDelta) for event in events)
+
+
+def _event_request_id(event: SessionEvent | None) -> str | None:
+    if event is None:
+        return None
+    value = event.payload.get("request_id")
+    return value if isinstance(value, str) else None
 
 
 def _previous_instruction_hashes(

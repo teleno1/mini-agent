@@ -42,6 +42,7 @@ class PermissionDecision(StrEnum):
     ALLOW = "allow"
     ASK = "ask"
     DENY = "deny"
+    CANCEL = "cancel"
 
 
 class CancellationBehavior(StrEnum):

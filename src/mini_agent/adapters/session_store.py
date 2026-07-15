@@ -239,6 +239,8 @@ class _SessionLock:
                 self._create()
             else:
                 self._create()
+        except OSError as exc:
+            raise SessionPersistenceError("could not durably acquire Session lock") from exc
 
     def _create(self) -> None:
         fd = os.open(self._path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -376,12 +378,22 @@ class SessionWriter:
         except (TypeError, ValueError, InvalidSessionEvents) as exc:
             raise SessionPersistenceError(str(exc)) from exc
 
+        original_size = self.events_path.stat().st_size
         try:
             with self.events_path.open("ab") as handle:
                 handle.write(encoded)
                 handle.flush()
                 os.fsync(handle.fileno())
         except OSError as exc:
+            # A failed fsync makes the append's durability unknowable.  Roll
+            # back the visible bytes best-effort and let the caller stop; it
+            # must not append a compensating event after this boundary.
+            try:
+                with self.events_path.open("r+b") as handle:
+                    handle.truncate(original_size)
+                    handle.flush()
+            except OSError:
+                pass
             raise SessionPersistenceError(f"could not durably append Session event: {exc}") from exc
 
         self._events.append(event)
