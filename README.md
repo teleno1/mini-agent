@@ -22,6 +22,27 @@ uv run pytest
 uv run mini-agent --help
 ```
 
+The locked development environment can be reproduced from a clean checkout:
+
+```console
+uv sync --frozen --all-groups
+uv run --frozen ruff format --check .
+uv run --frozen ruff check .
+uv run --frozen mypy
+uv run --frozen pytest
+```
+
+Build and verify local, unpublished artifacts with:
+
+```console
+uv run --frozen python scripts/build_artifacts.py
+uv run --frozen python scripts/smoke_artifacts.py
+```
+
+The build produces one pure-Python wheel, one source distribution, and a
+`SHA256SUMS` file under `dist/`. Both artifacts are checked for the required
+package metadata and can be installed without a source checkout.
+
 The runtime dependencies are intentionally limited to Typer, Rich, Pydantic,
 and httpx. No API key or Git repository is needed for the offline Fake
 Provider journey.

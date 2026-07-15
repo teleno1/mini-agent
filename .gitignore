@@ -4,6 +4,10 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .venv/
+.mini-agent/
+.env
+.env.*
+!.env.example
 build/
 dist/
 *.egg-info/

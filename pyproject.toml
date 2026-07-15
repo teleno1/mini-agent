@@ -15,6 +15,9 @@ classifiers = [
   "Environment :: Console",
   "Intended Audience :: Developers",
   "License :: OSI Approved :: MIT License",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
@@ -30,6 +33,12 @@ dependencies = [
 [project.scripts]
 mini-agent = "mini_agent.cli.app:main"
 
+[project.urls]
+Homepage = "https://github.com/teleno1/mini-agent"
+Repository = "https://github.com/teleno1/mini-agent"
+Issues = "https://github.com/teleno1/mini-agent/issues"
+Changelog = "https://github.com/teleno1/mini-agent/blob/master/CHANGELOG.md"
+
 [dependency-groups]
 dev = [
   "hatchling>=1.25,<2",
@@ -42,13 +51,27 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/mini_agent"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"README.md" = "README.md"
+"LICENSE" = "LICENSE"
+
 [tool.hatch.build.targets.sdist]
+ignore-vcs = true
 include = [
   "/src",
-  "/tests",
   "/README.md",
   "/LICENSE",
   "/pyproject.toml",
+]
+exclude = [
+  "/.env*",
+  "/.git",
+  "/.gitignore",
+  "/.mini-agent",
+  "/.scratch",
+  "/tests",
+  "/**/*.key",
+  "/**/*.pem",
 ]
 
 [tool.pytest.ini_options]
