@@ -37,6 +37,8 @@ def test_prepare_case_copies_template_and_requires_explicit_reset(tmp_path: Path
 
     assert destination == (tmp_path / "01-slugify").resolve()
     assert (destination / "TASK.md").is_file()
+    assert not tuple(destination.rglob("__pycache__"))
+    assert not tuple(destination.rglob("*.pyc"))
     (destination / "text_utils.py").write_text("changed", encoding="utf-8")
 
     with pytest.raises(FileExistsError, match="--reset"):

@@ -35,7 +35,11 @@ def prepare_case(case_name: str, *, reset: bool = False) -> Path:
         shutil.rmtree(destination)
 
     destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(source, destination)
+    shutil.copytree(
+        source,
+        destination,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+    )
     return destination.resolve()
 
 
