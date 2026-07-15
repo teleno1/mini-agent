@@ -178,7 +178,6 @@ class AgentTurnApplication:
                     resolved_session_id=resolved_session_id,
                     history=_history_without_current_user(conversation, history, user_message),
                     configuration=effective_configuration,
-                    resumed=resumed,
                     writer=writer,
                 )
                 if writer is not None:
@@ -348,7 +347,6 @@ class AgentTurnApplication:
         resolved_session_id: str,
         history: tuple[Message, ...],
         configuration: EffectiveConfiguration | None,
-        resumed: ResumedSession | None,
         writer: SessionWriter | None,
     ) -> ContextFrame | None:
         if self._context_builder is None:
