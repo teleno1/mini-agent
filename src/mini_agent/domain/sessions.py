@@ -8,7 +8,7 @@ disposable view rebuilt from those facts.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import StrEnum
 from typing import cast
@@ -33,6 +33,9 @@ class SessionEventType(StrEnum):
     ASSISTANT_MESSAGE = "assistant.message"
     TURN_COMPLETED = "turn.completed"
     TURN_FAILED = "turn.failed"
+    CONFIGURATION_CHANGED = "configuration.changed"
+    CONTEXT_MANIFEST_RECORDED = "context.manifest.recorded"
+    INSTRUCTION_CHANGED = "instruction.changed"
 
 
 class SessionStatus(StrEnum):
@@ -154,6 +157,8 @@ class SessionProjection:
     last_sequence: int
     turns: tuple[TurnProjection, ...]
     messages: tuple[Message, ...]
+    configuration_overrides: Mapping[str, JSONValue] = field(default_factory=dict)
+    context_manifests: tuple[dict[str, JSONValue], ...] = ()
 
     @property
     def current_turn(self) -> TurnProjection | None:
@@ -183,6 +188,8 @@ def rebuild_projection(events: tuple[SessionEvent, ...]) -> SessionProjection:
 
     turns: dict[str, TurnProjection] = {}
     messages: list[Message] = []
+    configuration_overrides: list[dict[str, JSONValue]] = []
+    context_manifests: list[dict[str, JSONValue]] = []
     status = SessionStatus.IDLE
     created_at = events[0].timestamp
 
@@ -197,6 +204,32 @@ def rebuild_projection(events: tuple[SessionEvent, ...]) -> SessionProjection:
         if event_type is SessionEventType.SESSION_CREATED:
             if event is not events[0]:
                 raise InvalidSessionEvents("session.created may occur only once")
+            continue
+
+        if event_type is SessionEventType.CONFIGURATION_CHANGED:
+            reset = event.payload.get("reset", False)
+            if not isinstance(reset, bool):
+                raise InvalidSessionEvents("configuration.changed reset must be a boolean")
+            if reset:
+                configuration_overrides.clear()
+            overrides = event.payload.get("overrides", {})
+            if not isinstance(overrides, dict):
+                raise InvalidSessionEvents("configuration.changed overrides must be an object")
+            current_overrides = (
+                {} if reset or not configuration_overrides else dict(configuration_overrides[-1])
+            )
+            current_overrides.update(cast(dict[str, JSONValue], dict(overrides)))
+            configuration_overrides[:] = [current_overrides] if current_overrides else []
+            continue
+
+        if event_type is SessionEventType.CONTEXT_MANIFEST_RECORDED:
+            manifest = event.payload.get("manifest", event.payload)
+            if not isinstance(manifest, dict):
+                raise InvalidSessionEvents("context.manifest.recorded must contain an object")
+            context_manifests.append(cast(dict[str, JSONValue], dict(manifest)))
+            continue
+
+        if event_type is SessionEventType.INSTRUCTION_CHANGED:
             continue
 
         if event_type is SessionEventType.TURN_STARTED:
@@ -294,6 +327,10 @@ def rebuild_projection(events: tuple[SessionEvent, ...]) -> SessionProjection:
         last_sequence=events[-1].sequence,
         turns=tuple(turns.values()),
         messages=tuple(messages),
+        configuration_overrides=(
+            dict(configuration_overrides[-1]) if configuration_overrides else {}
+        ),
+        context_manifests=tuple(context_manifests),
     )
 
 

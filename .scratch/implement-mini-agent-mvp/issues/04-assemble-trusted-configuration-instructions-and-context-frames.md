@@ -4,7 +4,7 @@
 
 **Blocked by:** 03 - Persist, list, and resume text-only Sessions.
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 - [ ] Implement strict built-in, user TOML, project TOML, environment, CLI, and Session-override precedence with per-field provenance and unknown-key failures.
 - [ ] Read the API Key only from the agreed environment variable, redact it everywhere, and prevent project configuration from setting credentials or Provider Base URL.

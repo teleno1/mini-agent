@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequenc
 from datetime import datetime
 from typing import Protocol
 
+from mini_agent.context import ContextFrame
 from mini_agent.domain.messages import Message
 from mini_agent.domain.sessions import JSONValue, SessionEvent, SessionEventType
 from mini_agent.domain.streams import StreamEvent
@@ -14,7 +15,9 @@ from mini_agent.domain.streams import StreamEvent
 class ModelProvider(Protocol):
     """Boundary through which the Agent Loop receives model responses."""
 
-    def stream(self, messages: Sequence[Message]) -> AsyncIterator[StreamEvent]:
+    def stream(
+        self, messages: Sequence[Message] | ContextFrame
+    ) -> AsyncIterator[StreamEvent]:
         """Stream normalized events for one provider request."""
 
 
@@ -64,6 +67,24 @@ class ResumedSession(Protocol):
     @property
     def messages(self) -> tuple[Message, ...]:
         """Complete durable messages in context order."""
+
+    @property
+    def configuration_overrides(self) -> Mapping[str, JSONValue]:
+        """Allowlisted non-secret Session configuration state."""
+
+
+class ContextBuilder(Protocol):
+    """Boundary that derives a fresh Context Frame per model request."""
+
+    def build(self, user_message: str, **kwargs: object) -> ContextFrame:
+        """Assemble one typed Context Frame."""
+
+
+class InstructionLoader(Protocol):
+    """Boundary for path-scoped project instruction discovery."""
+
+    def load(self, targets: Sequence[str] = ()) -> object:
+        """Load effective AGENTS.md instructions for target paths."""
 
 
 class SessionStore(Protocol):

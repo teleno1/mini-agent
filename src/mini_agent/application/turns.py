@@ -14,6 +14,11 @@ from mini_agent.application.ports import (
     SessionStore,
     SessionWriter,
 )
+from mini_agent.application.ports import (
+    ContextBuilder as ContextBuilderPort,
+)
+from mini_agent.configuration import EffectiveConfiguration
+from mini_agent.context import ContextFrame
 from mini_agent.domain.messages import AssistantMessage, Message, UserMessage
 from mini_agent.domain.sessions import SessionEvent, SessionEventType
 from mini_agent.domain.streams import Failure, StreamEvent
@@ -44,11 +49,17 @@ class TextTurnApplication:
         clock: Clock,
         id_generator: IDGenerator,
         session_store: SessionStore | None = None,
+        context_builder: ContextBuilderPort | None = None,
+        configuration: EffectiveConfiguration | None = None,
+        request_targets: tuple[str, ...] = (),
     ) -> None:
         self._provider = provider
         self._clock = clock
         self._id_generator = id_generator
         self._session_store = session_store
+        self._context_builder = context_builder
+        self._configuration = configuration
+        self._request_targets = request_targets
 
     async def run(
         self,
@@ -70,6 +81,7 @@ class TextTurnApplication:
         request_started: SessionEvent | None = None
         request_completed = False
         history: tuple[Message, ...] = ()
+        frame: ContextFrame | None = None
 
         try:
             if self._session_store is not None:
@@ -92,10 +104,28 @@ class TextTurnApplication:
                     causation_id=turn_started.event_id,
                     timestamp=started_at,
                 )
+                request_id = self._id_generator.new_id("request")
+                frame = self._build_context_frame(
+                    task,
+                    request_id=request_id,
+                    session_id=session_id,
+                    history=history,
+                )
+                if frame is not None:
+                    writer.append(
+                        SessionEventType.CONTEXT_MANIFEST_RECORDED,
+                        {
+                            "manifest": frame.manifest.as_dict(),
+                            "manifest_hash": frame.manifest.manifest_hash_without_self(),
+                        },
+                        turn_id=turn_id,
+                        causation_id=user_event.event_id,
+                        timestamp=self._clock.now(),
+                    )
                 request_started = writer.append(
                     SessionEventType.MODEL_REQUEST_STARTED,
                     {
-                        "request_id": self._id_generator.new_id("request"),
+                        "request_id": request_id,
                         "message_count": len(history) + 1,
                     },
                     turn_id=turn_id,
@@ -114,7 +144,19 @@ class TextTurnApplication:
                 writer.close()
             raise
 
-        request_messages = (*history, user_message)
+        if frame is None and self._context_builder is not None:
+            frame = self._build_context_frame(
+                task,
+                request_id=self._id_generator.new_id("request"),
+                session_id=session_id,
+                history=history,
+            )
+
+        request_messages: tuple[Message, ...] | ContextFrame
+        if frame is not None:
+            request_messages = frame
+        else:
+            request_messages = (*history, user_message)
 
         try:
             async for event in self._provider.stream(request_messages):
@@ -181,6 +223,24 @@ class TextTurnApplication:
         finally:
             if writer is not None:
                 writer.close()
+
+    def _build_context_frame(
+        self,
+        task: str,
+        *,
+        request_id: str,
+        session_id: str,
+        history: tuple[Message, ...],
+    ) -> ContextFrame | None:
+        if self._context_builder is None:
+            return None
+        return self._context_builder.build(
+            task,
+            request_id=request_id,
+            session_id=session_id,
+            targets=self._request_targets,
+            history=history,
+        )
 
     def _record_failed_turn(
         self,
