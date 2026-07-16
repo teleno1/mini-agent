@@ -6,6 +6,7 @@ from mini_agent.application.agent import (
     AgentTurnError,
     AgentTurnResult,
     ReadOnlyPermissionGate,
+    RecoveryRetryResult,
     SafeReadPermissionGate,
     TurnBudgets,
 )
@@ -25,6 +26,7 @@ __all__ = [
     "AgentTurnError",
     "AgentTurnApplication",
     "AgentTurnResult",
+    "RecoveryRetryResult",
     "ForcedInterrupt",
     "CompletionReport",
     "ConfirmationChoice",

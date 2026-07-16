@@ -379,7 +379,9 @@ class ApplyPatchTool(_WriteTool):
 
     async def execute(self, workspace: Workspace, arguments: BaseModel) -> ToolResult:
         request = _as_patch_input(arguments)
-        call_id = str(getattr(arguments, "tool_call_id", "apply-patch"))
+        call_id = str(
+            workspace.active_tool_call_id or getattr(arguments, "tool_call_id", "apply-patch")
+        )
         return await _run_transaction(
             workspace,
             request.operations,
@@ -417,7 +419,9 @@ class CreateFileTool(_WriteTool):
 
     async def execute(self, workspace: Workspace, arguments: BaseModel) -> ToolResult:
         request = _as_create_input(arguments)
-        call_id = str(getattr(arguments, "tool_call_id", "create-file"))
+        call_id = str(
+            workspace.active_tool_call_id or getattr(arguments, "tool_call_id", "create-file")
+        )
         operation = PatchOperation(operation="add", path=request.path, new_text=request.content)
         # ``create_parents`` is carried out by the same transaction helper; the
         # standalone operation remains strict when a caller opts out.
@@ -445,6 +449,11 @@ async def _run_transaction(
     expected_hashes: dict[str, str | None] = {}
     try:
         operation_tuple = tuple(operations)
+        workspace.update_tool_recovery(
+            state="preparing",
+            operation_count=len(operation_tuple),
+            paths=[operation.path for operation in operation_tuple],
+        )
         changes = _prepare_changes(
             workspace,
             ApplyPatchInput.model_construct(operations=operation_tuple),
@@ -465,13 +474,28 @@ async def _run_transaction(
             allow_missing_parents=True,
         )
         checkpoint = PatchCheckpoint.create(workspace, changes)
+        workspace.update_tool_recovery(
+            state="checkpointed",
+            checkpoint_id=checkpoint.checkpoint_id,
+            expected_hashes=expected_hashes,
+        )
         _recheck_before_commit(workspace, changes)
+        workspace.update_tool_recovery(state="committing")
         for change in changes:
             _commit_change(workspace, change)
             applied_paths.add(change.target.relative_path)
+            workspace.update_tool_recovery(
+                state="committing",
+                applied_paths=sorted(applied_paths),
+            )
             # Give cooperative cancellation a boundary between atomic file
             # replacements.  A cancellation is rolled back below.
             await asyncio.sleep(0)
+        workspace.update_tool_recovery(
+            state="committed",
+            applied_paths=sorted(applied_paths),
+            expected_hashes=expected_hashes,
+        )
         return ToolResult.succeeded(
             ToolCall(tool_call_id=call_id, name=tool_name, arguments={}),
             _transaction_data(changes, checkpoint, rolled_back=False, evidence=()),

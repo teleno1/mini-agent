@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import Any
+from uuid import uuid4
 
 
 class WorkspaceError(RuntimeError):
@@ -143,6 +147,9 @@ _SENSITIVE_FILENAMES = {
 class Workspace:
     """Resolve one real Workspace root and enforce every read beneath it."""
 
+    _active_tool_call_id: str | None
+    _recovery_path: Path | None
+
     def __init__(self, root: Path | str, *, checkpoint_directory: Path | None = None) -> None:
         try:
             resolved = Path(root).expanduser().resolve(strict=True)
@@ -151,6 +158,8 @@ class Workspace:
         if not resolved.is_dir():
             raise WorkspaceError("Workspace root must be a directory")
         self._root = resolved
+        self._active_tool_call_id = None
+        self._recovery_path = None
         self._checkpoint_directory = (
             checkpoint_directory.resolve(strict=False)
             if checkpoint_directory is not None
@@ -166,6 +175,96 @@ class Workspace:
         """Session-local storage reserved for host-created Patch Checkpoints."""
 
         return self._checkpoint_directory
+
+    @property
+    def recovery_directory(self) -> Path:
+        """Durable, non-authoritative evidence for an in-flight Tool call."""
+
+        return self._checkpoint_directory.parent / "recovery"
+
+    @property
+    def active_tool_call_id(self) -> str | None:
+        """The serial Tool call currently executing in this Workspace view."""
+
+        return getattr(self, "_active_tool_call_id", None)
+
+    def begin_tool_recovery(
+        self,
+        tool_call_id: str,
+        tool_name: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Write a best-effort recovery record before a Tool side effect starts.
+
+        The JSONL event log remains authoritative.  This sidecar exists only so
+        Resume can inspect process/checkpoint evidence when the process exits
+        between ``tool.started`` and its terminal event.
+        """
+
+        self._active_tool_call_id = tool_call_id
+        self._recovery_path = self.recovery_directory / (
+            f"{sha256(tool_call_id.encode('utf-8')).hexdigest()}.json"
+        )
+        self._write_recovery_record(
+            {
+                "tool_call_id": tool_call_id,
+                "tool_name": tool_name,
+                "state": "started",
+                **(metadata or {}),
+            }
+        )
+
+    def update_tool_recovery(self, **updates: Any) -> None:
+        """Merge bounded runtime evidence into the active Tool sidecar."""
+
+        path = getattr(self, "_recovery_path", None)
+        if path is None:
+            return
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            record = {
+                "tool_call_id": self.active_tool_call_id,
+                "state": "unknown",
+            }
+        if isinstance(record, dict):
+            record.update(updates)
+            self._write_recovery_record(record)
+
+    def clear_tool_recovery(self, tool_call_id: str | None = None) -> None:
+        """Remove evidence only after the corresponding terminal event is durable."""
+
+        if tool_call_id is not None and self.active_tool_call_id not in {None, tool_call_id}:
+            return
+        path = getattr(self, "_recovery_path", None)
+        if path is not None:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                # The terminal event is authoritative; a cleanup failure leaves
+                # inspectable evidence rather than changing the Tool outcome.
+                pass
+        self._active_tool_call_id = None
+        self._recovery_path = None
+
+    def _write_recovery_record(self, record: dict[str, Any]) -> None:
+        path = getattr(self, "_recovery_path", None)
+        if path is None:
+            return
+        temporary = self.recovery_directory / f"{path.name}.{uuid4().hex}.tmp"
+        try:
+            self.recovery_directory.mkdir(parents=True, exist_ok=True)
+            with temporary.open("w", encoding="utf-8", newline="\n") as handle:
+                json.dump(record, handle, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+        except OSError:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def for_session(self, session_id: str) -> Workspace:
         """Return a view sharing this root and using one Session's checkpoints."""

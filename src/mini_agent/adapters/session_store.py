@@ -7,6 +7,7 @@ writer lifetime.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import socket
@@ -14,8 +15,9 @@ import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 from uuid import uuid4
 
 from mini_agent.adapters.artifacts import ArtifactNotFoundError, ArtifactStore
@@ -36,6 +38,8 @@ from mini_agent.domain.sessions import (
     SessionStatus,
     rebuild_projection,
 )
+from mini_agent.instructions import InstructionLoader
+from mini_agent.tools.workspace import Workspace
 
 
 class SessionStoreError(RuntimeError):
@@ -60,6 +64,93 @@ class SessionReadOnlyError(SessionStoreError):
 
 class SessionNotResumableError(SessionStoreError):
     """Raised when recovery finds an unfinished transient Turn."""
+
+
+class ResumeChoice(StrEnum):
+    """The only choices that may resolve an interrupted Tool call."""
+
+    INSPECT = "inspect"
+    ABANDON = "abandon"
+    RETRY = "retry"
+    EXIT = "exit"
+
+
+@dataclass(frozen=True, slots=True)
+class ResumeToolEvidence:
+    """Bounded evidence collected without claiming an uncertain effect succeeded."""
+
+    tool_call_id: str
+    name: str
+    arguments: dict[str, JSONValue]
+    kind: str
+    evidence: dict[str, JSONValue]
+
+    def as_dict(self) -> dict[str, JSONValue]:
+        return {
+            "tool_call_id": self.tool_call_id,
+            "name": self.name,
+            "arguments": self.arguments,
+            "kind": self.kind,
+            "evidence": self.evidence,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ResumeInspection:
+    """Validated, read-only recovery facts for a Session Resume attempt."""
+
+    snapshot: SessionSnapshot
+    interrupted_tools: tuple[ResumeToolEvidence, ...]
+    open_request_ids: tuple[str, ...]
+    previous_instruction_hashes: tuple[tuple[str, str], ...]
+    current_instruction_hashes: tuple[tuple[str, str], ...]
+    instruction_change: bool
+    blocked_reason: str | None = None
+
+    @property
+    def requires_recovery(self) -> bool:
+        return bool(self.snapshot.projection and self.snapshot.projection.current_turn)
+
+    @property
+    def safe_to_continue(self) -> bool:
+        return not self.requires_recovery and self.blocked_reason is None
+
+    def as_dict(self) -> dict[str, JSONValue]:
+        return {
+            "session_id": self.snapshot.session_id,
+            "interrupted_tools": cast(
+                list[JSONValue], [item.as_dict() for item in self.interrupted_tools]
+            ),
+            "open_request_ids": list(self.open_request_ids),
+            "previous_instruction_hashes": cast(
+                list[JSONValue], _hash_records(self.previous_instruction_hashes)
+            ),
+            "current_instruction_hashes": cast(
+                list[JSONValue], _hash_records(self.current_instruction_hashes)
+            ),
+            "instruction_change": self.instruction_change,
+            "blocked_reason": self.blocked_reason,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ResumeOutcome:
+    """Result of one explicit Resume recovery choice."""
+
+    inspection: ResumeInspection
+    choice: ResumeChoice
+    resumed: ResumedSession | None
+
+
+class SessionRecoveryRequired(SessionNotResumableError):
+    """Raised with validated evidence when a Session needs a user choice."""
+
+    def __init__(self, inspection: ResumeInspection) -> None:
+        self.inspection = inspection
+        super().__init__(
+            f"Session {inspection.snapshot.session_id} has interrupted work requiring "
+            "inspect, abandon, retry, or exit"
+        )
 
 
 class SessionPersistenceError(SessionStoreError):
@@ -546,16 +637,199 @@ class SessionStore:
     def resume(self, session_id: str) -> ResumedSession:
         """Rebuild a resumable Session from events, never serialized runtime state."""
 
-        snapshot = self.read(session_id)
-        if snapshot.read_only:
+        inspection = self.inspect_resume(session_id)
+        if inspection.snapshot.read_only:
             raise SessionReadOnlyError(
                 f"Session {session_id} uses a newer schema and cannot Resume"
             )
-        if not snapshot.resumable:
-            raise SessionNotResumableError(
-                f"Session {session_id} contains an unfinished Turn and needs recovery"
+        if inspection.blocked_reason is not None:
+            raise SessionNotResumableError(inspection.blocked_reason)
+        if inspection.requires_recovery:
+            raise SessionRecoveryRequired(inspection)
+        return ResumedSession(inspection.snapshot)
+
+    def inspect_resume(self, session_id: str) -> ResumeInspection:
+        """Validate a Resume and collect evidence without replaying any Tool."""
+
+        snapshot = self.read(session_id)
+        return _build_resume_inspection(
+            snapshot,
+            self.workspace_root,
+            self._session_directory(session_id),
+        )
+
+    def reconcile_resume(
+        self,
+        session_id: str,
+        choice: ResumeChoice | str,
+    ) -> ResumeOutcome:
+        """Apply one explicit recovery choice while holding the Session lock.
+
+        ``inspect`` records only the evidence review.  ``exit`` performs no
+        append at all.  ``abandon`` and ``retry`` first close every uncertain
+        Tool with exactly one ``tool.interrupted`` result and fail the old Turn;
+        the caller may then start a fresh Turn, which revalidates and
+        reauthorizes any new Tool call.
+        """
+
+        selected = ResumeChoice(choice)
+        inspection = self.inspect_resume(session_id)
+        if inspection.snapshot.read_only:
+            raise SessionReadOnlyError(
+                f"Session {session_id} uses a newer schema and cannot Resume"
             )
-        return ResumedSession(snapshot)
+        if selected is ResumeChoice.EXIT:
+            return ResumeOutcome(inspection, selected, None)
+        if inspection.blocked_reason is not None:
+            raise SessionNotResumableError(inspection.blocked_reason)
+        if not inspection.requires_recovery:
+            return ResumeOutcome(inspection, selected, ResumedSession(inspection.snapshot))
+
+        with self._open_writer(session_id, force_stale_lock=False) as writer:
+            current_snapshot = SessionSnapshot(
+                session_id=session_id,
+                events=writer.events,
+                projection=writer.projection,
+                read_only=False,
+                recovery_warnings=inspection.snapshot.recovery_warnings,
+            )
+            current = _build_resume_inspection(
+                current_snapshot,
+                self.workspace_root,
+                self._session_directory(session_id),
+            )
+            if current.blocked_reason is not None:
+                raise SessionNotResumableError(current.blocked_reason)
+            if not current.requires_recovery:
+                return ResumeOutcome(current, selected, ResumedSession(current.snapshot))
+            if selected is ResumeChoice.INSPECT:
+                writer.append(
+                    SessionEventType.RESUME_RECOVERY_INSPECTED,
+                    {"inspection": current.as_dict()},
+                    turn_id=_active_turn_id(current.snapshot),
+                )
+                return ResumeOutcome(current, selected, None)
+
+            turn_id = _active_turn_id(current.snapshot)
+            if turn_id is None:
+                raise SessionNotResumableError("Resume lost its active Turn during validation")
+            if current.instruction_change:
+                writer.append(
+                    SessionEventType.INSTRUCTION_CHANGED,
+                    {
+                        "previous_hashes": cast(
+                            list[JSONValue], _hash_records(current.previous_instruction_hashes)
+                        ),
+                        "current_hashes": cast(
+                            list[JSONValue], _hash_records(current.current_instruction_hashes)
+                        ),
+                        "source": "validated-resume",
+                    },
+                    turn_id=turn_id,
+                )
+            recovery_event = (
+                SessionEventType.RESUME_RECOVERY_RETRIED
+                if selected is ResumeChoice.RETRY
+                else SessionEventType.RESUME_RECOVERY_ABANDONED
+            )
+            writer.append(
+                recovery_event,
+                {
+                    "choice": selected.value,
+                    "tools": [item.as_dict() for item in current.interrupted_tools],
+                    "open_request_ids": list(current.open_request_ids),
+                },
+                turn_id=turn_id,
+            )
+            for item in current.interrupted_tools:
+                _append_interrupted_tool(writer, item, turn_id=turn_id)
+                _clear_recovery_sidecar(self._session_directory(session_id), item.tool_call_id)
+            for request_id in current.open_request_ids:
+                writer.append(
+                    SessionEventType.MODEL_REQUEST_FAILED,
+                    {
+                        "request_id": request_id,
+                        "category": "cancellation",
+                        "code": "resume-interrupted",
+                        "description": "the Provider request was not closed before process exit",
+                        "retryable": False,
+                    },
+                    turn_id=turn_id,
+                )
+            if current.snapshot.projection is not None and current.snapshot.projection.current_plan:
+                plan = current.snapshot.projection.current_plan
+                writer.append(
+                    SessionEventType.PLAN_RESET,
+                    {
+                        "plan_id": plan.plan_id,
+                        "reason": "interrupted Turn cannot be resumed as a coroutine",
+                    },
+                    turn_id=turn_id,
+                )
+            writer.append(
+                SessionEventType.TURN_FAILED,
+                {
+                    "outcome": "interrupted-recovery",
+                    "choice": selected.value,
+                    "uncertain_tool_count": len(current.interrupted_tools),
+                },
+                turn_id=turn_id,
+            )
+            final_snapshot = SessionSnapshot(
+                session_id=session_id,
+                events=writer.events,
+                projection=writer.projection,
+                read_only=False,
+                recovery_warnings=inspection.snapshot.recovery_warnings,
+            )
+            return ResumeOutcome(current, selected, ResumedSession(final_snapshot))
+
+    def record_instruction_change(self, session_id: str) -> bool:
+        """Persist a validated instruction change for an otherwise idle Session."""
+
+        inspection = self.inspect_resume(session_id)
+        if inspection.snapshot.read_only:
+            raise SessionReadOnlyError(
+                f"Session {session_id} uses a newer schema and cannot Resume"
+            )
+        if inspection.blocked_reason is not None:
+            raise SessionNotResumableError(inspection.blocked_reason)
+        if inspection.requires_recovery:
+            raise SessionRecoveryRequired(inspection)
+        if not inspection.instruction_change:
+            return False
+        with self._open_writer(session_id, force_stale_lock=False) as writer:
+            current_snapshot = SessionSnapshot(
+                session_id=session_id,
+                events=writer.events,
+                projection=writer.projection,
+                read_only=False,
+                recovery_warnings=inspection.snapshot.recovery_warnings,
+            )
+            current = _build_resume_inspection(
+                current_snapshot,
+                self.workspace_root,
+                self._session_directory(session_id),
+            )
+            if current.blocked_reason is not None:
+                raise SessionNotResumableError(current.blocked_reason)
+            if current.requires_recovery:
+                raise SessionRecoveryRequired(current)
+            if not current.instruction_change:
+                return False
+            writer.append(
+                SessionEventType.INSTRUCTION_CHANGED,
+                {
+                    "previous_hashes": cast(
+                        list[JSONValue], _hash_records(current.previous_instruction_hashes)
+                    ),
+                    "current_hashes": cast(
+                        list[JSONValue], _hash_records(current.current_instruction_hashes)
+                    ),
+                    "source": "validated-resume",
+                },
+            )
+        return True
 
     def list_sessions(self) -> tuple[SessionMetadata, ...]:
         """List Sessions by rebuilding each entry from events, not cache files."""
@@ -699,6 +973,475 @@ class _LoadedEvents:
     warnings: tuple[str, ...]
 
 
+def _build_resume_inspection(
+    snapshot: SessionSnapshot,
+    workspace_root: Path,
+    session_directory: Path,
+) -> ResumeInspection:
+    previous_hashes = _manifest_instruction_hashes(snapshot)
+    current_hashes: tuple[tuple[str, str], ...] = ()
+    blocked_reason: str | None = None
+    if snapshot.read_only or snapshot.projection is None:
+        blocked_reason = "a newer Session schema is read-only; Resume is blocked"
+    else:
+        try:
+            instructions = InstructionLoader(workspace_root).load(
+                _resume_instruction_targets(snapshot.events, previous_hashes)
+            )
+            current_hashes = instructions.hashes
+            if instructions.conflicts or instructions.issues:
+                blocked_reason = (
+                    "current AGENTS.md instructions are conflicting, unreadable, or oversized; "
+                    "unsafe continuation is blocked"
+                )
+        except Exception as exc:
+            blocked_reason = f"current AGENTS.md instructions could not be validated: {exc}"
+
+    sidecars, sidecar_error = _load_recovery_sidecars(session_directory)
+    if sidecar_error is not None:
+        blocked_reason = sidecar_error
+
+    interrupted: list[ResumeToolEvidence] = []
+    open_requests: tuple[str, ...] = ()
+    projection = snapshot.projection
+    if projection is not None and projection.current_turn is not None:
+        turn_id = projection.current_turn.turn_id
+        open_requests = _open_request_ids(snapshot.events, turn_id)
+        for call in projection.current_turn.tool_calls:
+            if call.status.value != "started":
+                continue
+            start_record = _started_tool_record(snapshot.events, call.tool_call_id)
+            sidecar = sidecars.get(call.tool_call_id, {})
+            interrupted.append(
+                _tool_evidence(
+                    call.tool_call_id,
+                    call.name,
+                    call.arguments,
+                    start_record,
+                    sidecar,
+                    workspace_root,
+                    snapshot.session_id,
+                    session_directory,
+                )
+            )
+
+    started_ids = {
+        event.payload.get("tool_call_id")
+        for event in snapshot.events
+        if event.event_type == SessionEventType.TOOL_STARTED
+    }
+    terminal_ids = {
+        event.payload.get("tool_call_id")
+        for event in snapshot.events
+        if event.event_type
+        in {
+            SessionEventType.TOOL_COMPLETED,
+            SessionEventType.TOOL_FAILED,
+            SessionEventType.TOOL_INTERRUPTED,
+        }
+    }
+    orphaned = [
+        call_id
+        for call_id in sidecars
+        if call_id not in started_ids and call_id not in terminal_ids
+    ]
+    if orphaned:
+        blocked_reason = (
+            "unresolved Tool persistence evidence exists without a durable tool.started "
+            f"event: {', '.join(sorted(orphaned))}"
+        )
+
+    return ResumeInspection(
+        snapshot=snapshot,
+        interrupted_tools=tuple(interrupted),
+        open_request_ids=open_requests,
+        previous_instruction_hashes=previous_hashes,
+        current_instruction_hashes=current_hashes,
+        instruction_change=previous_hashes != current_hashes,
+        blocked_reason=blocked_reason,
+    )
+
+
+def _manifest_instruction_hashes(snapshot: SessionSnapshot) -> tuple[tuple[str, str], ...]:
+    if snapshot.projection is None or not snapshot.projection.context_manifests:
+        return ()
+    raw = snapshot.projection.context_manifests[-1].get("instruction_hashes", [])
+    if not isinstance(raw, list):
+        return ()
+    result: list[tuple[str, str]] = []
+    for item in raw:
+        if (
+            isinstance(item, dict)
+            and isinstance(item.get("path"), str)
+            and isinstance(item.get("sha256"), str)
+        ):
+            path_value = item.get("path")
+            digest_value = item.get("sha256")
+            if isinstance(path_value, str) and isinstance(digest_value, str):
+                result.append((path_value, digest_value))
+    return tuple(result)
+
+
+def _resume_instruction_targets(
+    events: tuple[SessionEvent, ...],
+    previous_hashes: tuple[tuple[str, str], ...] = (),
+) -> tuple[str, ...]:
+    targets: list[str] = [path for path, _ in previous_hashes]
+    for event in events:
+        if event.event_type != SessionEventType.TOOL_VALIDATED:
+            continue
+        arguments = event.payload.get("arguments")
+        if not isinstance(arguments, dict):
+            continue
+        name = event.payload.get("name")
+        if name == "read_file" and isinstance(arguments.get("path"), str):
+            targets.append(cast(str, arguments["path"]))
+        elif name == "search_files" and isinstance(arguments.get("directory"), str):
+            targets.append(cast(str, arguments["directory"]))
+        elif name == "shell" and isinstance(arguments.get("working_directory"), str):
+            targets.append(cast(str, arguments["working_directory"]))
+        elif name in {"apply_patch", "create_file"}:
+            operations = arguments.get("operations")
+            if name == "create_file":
+                operations = [arguments]
+            if isinstance(operations, list):
+                for operation in operations:
+                    if isinstance(operation, dict) and isinstance(operation.get("path"), str):
+                        targets.append(cast(str, operation["path"]))
+    return tuple(dict.fromkeys(targets))
+
+
+def _open_request_ids(events: tuple[SessionEvent, ...], turn_id: str) -> tuple[str, ...]:
+    started: list[str] = []
+    closed: set[str] = set()
+    for event in events:
+        if event.turn_id != turn_id:
+            continue
+        if event.event_type == SessionEventType.MODEL_REQUEST_STARTED:
+            request_id = event.payload.get("request_id")
+            if isinstance(request_id, str):
+                started.append(request_id)
+        elif event.event_type in {
+            SessionEventType.MODEL_REQUEST_COMPLETED,
+            SessionEventType.MODEL_REQUEST_FAILED,
+        }:
+            request_id = event.payload.get("request_id")
+            if isinstance(request_id, str):
+                closed.add(request_id)
+    return tuple(request_id for request_id in started if request_id not in closed)
+
+
+def _started_tool_record(
+    events: tuple[SessionEvent, ...], tool_call_id: str
+) -> dict[str, JSONValue]:
+    for event in reversed(events):
+        if (
+            event.event_type == SessionEventType.TOOL_STARTED
+            and event.payload.get("tool_call_id") == tool_call_id
+        ):
+            return dict(event.payload)
+    return {}
+
+
+def _load_recovery_sidecars(
+    session_directory: Path,
+) -> tuple[dict[str, dict[str, JSONValue]], str | None]:
+    directory = session_directory / "recovery"
+    if not directory.exists():
+        return {}, None
+    records: dict[str, dict[str, JSONValue]] = {}
+    try:
+        paths = sorted(directory.glob("*.json"))
+        for path in paths:
+            record = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(record, dict) or not isinstance(record.get("tool_call_id"), str):
+                return {}, f"recovery evidence is malformed: {path.name}"
+            records[record["tool_call_id"]] = cast(dict[str, JSONValue], record)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return {}, f"recovery evidence cannot be read safely: {exc}"
+    return records, None
+
+
+def _clear_recovery_sidecar(session_directory: Path, tool_call_id: str) -> None:
+    path = (
+        session_directory
+        / "recovery"
+        / (f"{hashlib.sha256(tool_call_id.encode('utf-8')).hexdigest()}.json")
+    )
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        # The terminal event is authoritative; an orphaned evidence file is
+        # retained for the next inspection if cleanup cannot be proven.
+        pass
+
+
+def _tool_evidence(
+    tool_call_id: str,
+    name: str,
+    arguments: dict[str, JSONValue],
+    started_record: dict[str, JSONValue],
+    sidecar: dict[str, JSONValue],
+    workspace_root: Path,
+    session_id: str,
+    session_directory: Path,
+) -> ResumeToolEvidence:
+    merged_sidecar = dict(sidecar)
+    started_recovery = started_record.get("recovery")
+    if isinstance(started_recovery, dict):
+        for key, value in started_recovery.items():
+            merged_sidecar.setdefault(key, value)
+    workspace = Workspace(
+        workspace_root,
+        checkpoint_directory=session_directory / "checkpoints",
+    )
+    if name in {"read_file", "search_files"}:
+        evidence = _read_tool_evidence(workspace, name, arguments)
+        kind = "read"
+    elif name in {"apply_patch", "create_file"}:
+        evidence = _patch_tool_evidence(
+            workspace,
+            name,
+            arguments,
+            merged_sidecar,
+            session_directory,
+        )
+        kind = "patch"
+    elif name == "shell":
+        evidence = _shell_tool_evidence(merged_sidecar)
+        kind = "shell"
+    else:
+        evidence = {"state": "unknown", "sidecar": merged_sidecar}
+        kind = "unknown"
+    return ResumeToolEvidence(tool_call_id, name, arguments, kind, evidence)
+
+
+def _read_tool_evidence(
+    workspace: Workspace,
+    name: str,
+    arguments: dict[str, JSONValue],
+) -> dict[str, JSONValue]:
+    target_value = arguments.get("path") if name == "read_file" else arguments.get("directory", ".")
+    target = target_value if isinstance(target_value, str) else "."
+    try:
+        resolved = workspace.resolve_read(target, directory=name == "search_files")
+        raw = resolved.path.read_bytes() if name == "read_file" else b""
+        if name == "search_files":
+            return {
+                "state": "directory-available",
+                "target": resolved.relative_path,
+                "query": arguments.get("query", arguments.get("pattern", "")),
+                "glob": arguments.get("glob", arguments.get("file_glob")),
+                "regex": arguments.get("regex", False),
+                "recommendation": "retry as a new validated call if the observation is needed",
+            }
+        return {
+            "state": "available",
+            "target": resolved.relative_path,
+            "sha256": hashlib.sha256(raw).hexdigest() if raw else None,
+            "preview": raw[:4096].decode("utf-8", errors="replace") if raw else "",
+            "recommendation": "retry as a new validated call if the observation is needed",
+        }
+    except Exception as exc:
+        return {
+            "state": "changed-or-unavailable",
+            "target": target,
+            "error": type(exc).__name__,
+            "recommendation": "retry as a new validated call if the observation is needed",
+        }
+
+
+def _patch_tool_evidence(
+    workspace: Workspace,
+    name: str,
+    arguments: dict[str, JSONValue],
+    sidecar: dict[str, JSONValue],
+    session_directory: Path,
+) -> dict[str, JSONValue]:
+    operations = arguments.get("operations")
+    if name == "create_file":
+        operations = [
+            {
+                "operation": "add",
+                "path": arguments.get("path"),
+                "new_text": arguments.get("content"),
+            }
+        ]
+    if not isinstance(operations, list):
+        return {"state": "unknown", "reason": "Patch arguments were not durable"}
+
+    checkpoint_id = sidecar.get("checkpoint_id")
+    checkpoint_directory = workspace.checkpoint_directory
+    if not isinstance(checkpoint_id, str):
+        candidates = sorted(
+            checkpoint_directory.glob("*/manifest.json"),
+            key=lambda path: path.stat().st_mtime_ns,
+            reverse=True,
+        )
+        checkpoint_id = candidates[0].parent.name if candidates else None
+    manifest: dict[str, Any] = {}
+    if isinstance(checkpoint_id, str):
+        manifest_path = checkpoint_directory / checkpoint_id / "manifest.json"
+        try:
+            raw_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if isinstance(raw_manifest, dict):
+                manifest = raw_manifest
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            manifest = {}
+    before_by_path: dict[str, tuple[str | None, bytes | None]] = {}
+    raw_files = manifest.get("files", [])
+    if isinstance(raw_files, list) and isinstance(checkpoint_id, str):
+        for index, item in enumerate(raw_files):
+            if not isinstance(item, dict) or not isinstance(item.get("path"), str):
+                continue
+            before: bytes | None = None
+            if item.get("existed") is True:
+                before_path = checkpoint_directory / checkpoint_id / "before" / f"{index:04d}.bin"
+                try:
+                    before = before_path.read_bytes()
+                except OSError:
+                    before = None
+            digest = item.get("sha256") if isinstance(item.get("sha256"), str) else None
+            before_by_path[item["path"]] = (digest, before)
+
+    files: list[dict[str, JSONValue]] = []
+    for operation in operations:
+        if not isinstance(operation, dict) or not isinstance(operation.get("path"), str):
+            continue
+        relative = cast(str, operation["path"])
+        before_hash, before_bytes = before_by_path.get(relative, (None, None))
+        current_hash: str | None = None
+        try:
+            current = workspace.resolve_write(relative, allow_missing=True)
+            if current.existed:
+                current_hash = hashlib.sha256(current.path.read_bytes()).hexdigest()
+        except Exception:
+            current_hash = None
+        expected_new: str | None = None
+        operation_name = operation.get("operation", operation.get("op"))
+        new_text = operation.get("new_text", operation.get("new"))
+        if operation_name == "add" and isinstance(new_text, str):
+            expected_new = hashlib.sha256(new_text.encode("utf-8")).hexdigest()
+        elif operation_name == "update" and isinstance(new_text, str) and before_bytes is not None:
+            old_text = operation.get("old_text", operation.get("old"))
+            if isinstance(old_text, str):
+                try:
+                    updated = before_bytes.decode("utf-8").replace(old_text, new_text, 1)
+                    expected_new = hashlib.sha256(updated.encode("utf-8")).hexdigest()
+                except UnicodeDecodeError:
+                    expected_new = None
+        state = "unknown"
+        if current_hash == expected_new and expected_new is not None:
+            state = "present-as-expected"
+        elif current_hash == before_hash:
+            state = "still-at-before-image"
+        elif current_hash is None and operation_name == "delete" and before_hash is not None:
+            state = "absent-as-expected"
+        elif current_hash is not None or before_hash is not None:
+            state = "changed-or-partial"
+        files.append(
+            {
+                "path": relative,
+                "operation": operation_name if isinstance(operation_name, str) else "unknown",
+                "before_sha256": before_hash,
+                "current_sha256": current_hash,
+                "expected_new_sha256": expected_new,
+                "state": state,
+            }
+        )
+    states = {cast(str, item["state"]) for item in files if isinstance(item.get("state"), str)}
+    if states and states <= {"still-at-before-image", "absent-as-expected"}:
+        overall = "unchanged"
+    elif states and states <= {"present-as-expected", "absent-as-expected"}:
+        overall = "all-expected-bytes-present-but-not-proven"
+    elif "changed-or-partial" in states:
+        overall = "partial-or-raced"
+    else:
+        overall = "unknown"
+    return {
+        "state": overall,
+        "checkpoint_id": checkpoint_id,
+        "files": cast(list[JSONValue], files),
+        "sidecar": sidecar,
+        "note": "Hashes are evidence only; Resume never converts them into success.",
+    }
+
+
+def _shell_tool_evidence(sidecar: dict[str, JSONValue]) -> dict[str, JSONValue]:
+    evidence = dict(sidecar)
+    raw_process = evidence.get("process_evidence")
+    process = dict(raw_process) if isinstance(raw_process, dict) else {}
+    pid = process.get("pid")
+    if isinstance(pid, int) and not isinstance(pid, bool):
+        process["alive"] = _process_alive(pid)
+    evidence["process_evidence"] = process
+    evidence.setdefault("state", "unknown")
+    evidence.setdefault(
+        "note",
+        "Process and output evidence cannot prove that an uncertain Shell call succeeded.",
+    )
+    return evidence
+
+
+def _append_interrupted_tool(
+    writer: SessionWriter,
+    evidence: ResumeToolEvidence,
+    *,
+    turn_id: str,
+) -> SessionEvent:
+    result: dict[str, JSONValue] = {
+        "tool_call_id": evidence.tool_call_id,
+        "tool_name": evidence.name,
+        "outcome": "interrupted",
+        "data": {
+            "recovery": evidence.as_dict(),
+            "confirmed_effect": False,
+        },
+        "error": {
+            "category": "recovery",
+            "code": "uncertain-interruption",
+            "message": (
+                "Tool side effects were uncertain after process exit; no success was assumed"
+            ),
+        },
+    }
+    result_text = json.dumps(result, ensure_ascii=False, sort_keys=True)
+    return writer.append(
+        SessionEventType.TOOL_INTERRUPTED,
+        {
+            "tool_call_id": evidence.tool_call_id,
+            "name": evidence.name,
+            "outcome": "interrupted",
+            "result": result,
+            "result_text": result_text,
+            "recovery": evidence.as_dict(),
+        },
+        turn_id=turn_id,
+        causation_id=evidence.tool_call_id,
+    )
+
+
+def _active_turn_id(snapshot: SessionSnapshot) -> str | None:
+    if snapshot.projection is None or snapshot.projection.current_turn is None:
+        return None
+    return snapshot.projection.current_turn.turn_id
+
+
+def _hash_records(values: tuple[tuple[str, str], ...]) -> list[dict[str, str]]:
+    return [{"path": path, "sha256": digest} for path, digest in values]
+
+
+def _looks_like_partial_json(text: str, error: json.JSONDecodeError) -> bool:
+    """Recognize an incomplete tail without forgiving a complete bad record."""
+
+    stripped = text.rstrip()
+    if not stripped:
+        return True
+    if error.msg.startswith("Unterminated"):
+        return True
+    return stripped.count("{") > stripped.count("}") or stripped.count("[") > stripped.count("]")
+
+
 def _load_events(
     path: Path,
     session_id: str,
@@ -717,10 +1460,18 @@ def _load_events(
         tail = data[boundary:]
         try:
             tail_text = tail.decode("utf-8")
-            json.loads(tail_text)
-        except (UnicodeDecodeError, json.JSONDecodeError):
+            tail_record = json.loads(tail_text)
+        except UnicodeDecodeError:
             if not repair:
                 raise SessionCorruptionError("Session ends with a partial JSON line")
+            message = f"repaired trailing partial JSON line in {path}"
+            _truncate(path, data[:boundary])
+            warnings.warn(message, PartialTailWarning, stacklevel=3)
+            warnings_seen.append(message)
+            data = data[:boundary]
+        except json.JSONDecodeError as exc:
+            if not repair or not _looks_like_partial_json(tail_text, exc):
+                raise SessionCorruptionError("Session ends with malformed JSON") from exc
             message = f"repaired trailing partial JSON line in {path}"
             _truncate(path, data[:boundary])
             warnings.warn(message, PartialTailWarning, stacklevel=3)
@@ -729,7 +1480,12 @@ def _load_events(
         else:
             # A valid final object without its framing newline is safe to keep,
             # but normalize it before a future append so events cannot merge.
-            if repair:
+            schema_value = tail_record.get("schema_version", tail_record.get("version", 0))
+            if repair and not (
+                isinstance(schema_value, int)
+                and not isinstance(schema_value, bool)
+                and schema_value > CURRENT_SCHEMA_VERSION
+            ):
                 _truncate(path, data + b"\n")
                 data += b"\n"
 

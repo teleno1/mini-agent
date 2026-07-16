@@ -132,6 +132,18 @@ class AgentTurnResult:
     completion_report: CompletionReport
 
 
+@dataclass(frozen=True, slots=True)
+class RecoveryRetryResult:
+    """Result of explicit retries executed as newly validated Tool calls."""
+
+    session_id: str
+    turn_id: str
+    old_tool_call_ids: tuple[str, ...]
+    new_tool_call_ids: tuple[str, ...]
+    tool_results: tuple[ToolResult, ...]
+    completed_at: datetime
+
+
 class ReadOnlyPermissionGate:
     """Automatically allow safe reads and deny other side-effect classes."""
 
@@ -573,6 +585,7 @@ class AgentTurnApplication:
                         turn_id=turn_id,
                         causation_id=terminal_causation,
                     )
+                    execution_workspace.clear_tool_recovery(call.tool_call_id)
                     result_message = ToolResultMessage(
                         call.tool_call_id,
                         result.text,
@@ -609,6 +622,140 @@ class AgentTurnApplication:
             if writer is not None:
                 writer.close()
             self._release_active_session(resolved_session_id)
+
+    async def retry_interrupted(self, session_id: str) -> RecoveryRetryResult:
+        """Retry every interrupted call as a fresh, validated, authorized call.
+
+        Resume first closes the old uncertain calls as ``interrupted``.  The
+        recovery Turn then proposes new IDs and sends each through the normal
+        Tool Registry and Permission Gate.  It does not replay the old call or
+        manufacture a Provider response.
+        """
+
+        if self._session_store is None:
+            raise ValueError("retry_interrupted requires a Session Store")
+        reconcile = getattr(self._session_store, "reconcile_resume", None)
+        if reconcile is None:
+            raise TypeError("the Session Store does not support validated Resume recovery")
+        outcome = reconcile(session_id, "retry")
+        inspection = outcome.inspection
+        resumed = outcome.resumed
+        if resumed is None:
+            raise AgentTurnError("Resume retry did not close the interrupted Turn")
+        effective_configuration = self._configuration
+        if self._configuration_resolver is not None:
+            effective_configuration = self._configuration_resolver.resolve(
+                session_overrides=resumed.configuration_overrides
+            )
+        permission_gate = self._permission_gate or self._default_permission_gate
+        if isinstance(permission_gate, PermissionPolicyGate):
+            permission_gate.begin_session(session_id)
+            permission_gate.set_mode(
+                effective_configuration.permission_mode
+                if effective_configuration is not None
+                else PermissionMode.SUGGEST
+            )
+
+        writer = self._session_store.open_writer(session_id)
+        workspace = self._workspace.for_session(session_id)
+        turn_id = self._id_generator.new_id("turn")
+        started_at = self._clock.now()
+        results: list[ToolResult] = []
+        new_call_ids: list[str] = []
+        try:
+            turn_started = writer.append(
+                SessionEventType.TURN_STARTED,
+                {},
+                turn_id=turn_id,
+                timestamp=started_at,
+            )
+            user_event = writer.append(
+                SessionEventType.USER_MESSAGE,
+                {
+                    "role": "user",
+                    "content": "Explicitly retry the interrupted Tool calls as new calls.",
+                },
+                turn_id=turn_id,
+                causation_id=turn_started.event_id,
+                timestamp=started_at,
+            )
+            for evidence in inspection.interrupted_tools:
+                new_call_id = self._id_generator.new_id("tool")
+                new_call_ids.append(new_call_id)
+                call = ToolCall(
+                    tool_call_id=new_call_id,
+                    name=evidence.name,
+                    arguments=evidence.arguments,
+                )
+                proposed = writer.append(
+                    SessionEventType.TOOL_PROPOSED,
+                    {
+                        "tool_call_id": new_call_id,
+                        "name": evidence.name,
+                        "arguments": cast(dict[str, JSONValue], evidence.arguments),
+                    },
+                    turn_id=turn_id,
+                    causation_id=user_event.event_id,
+                )
+                result, terminal_causation = await self._execute_tool(
+                    call,
+                    writer,
+                    workspace,
+                    permission_gate,
+                    turn_id=turn_id,
+                    causation_id=proposed.event_id,
+                    permission_mode=(
+                        effective_configuration.permission_mode.value
+                        if effective_configuration is not None
+                        else PermissionMode.SUGGEST
+                    ),
+                )
+                result, terminal_causation = self._materialize_tool_result(
+                    result,
+                    writer,
+                    configuration=effective_configuration,
+                    max_output_bytes=min(
+                        self._tool_registry.require(call.name).limits.max_output_bytes,
+                        MAX_TOOL_RESPONSE_BYTES,
+                    ),
+                    threshold=(
+                        effective_configuration.artifact_threshold_bytes
+                        if effective_configuration is not None
+                        else 32 * 1024
+                    ),
+                    turn_id=turn_id,
+                    causation_id=terminal_causation,
+                )
+                self._append_tool_terminal(
+                    writer,
+                    result,
+                    turn_id=turn_id,
+                    causation_id=terminal_causation,
+                )
+                workspace.clear_tool_recovery(new_call_id)
+                results.append(result)
+            completed_at = self._clock.now()
+            writer.append(
+                SessionEventType.TURN_FAILED,
+                {
+                    "outcome": "recovery-retry",
+                    "tool_call_count": len(results),
+                    "note": "Recovery retries do not invent a Provider response.",
+                },
+                turn_id=turn_id,
+                causation_id=user_event.event_id,
+                timestamp=completed_at,
+            )
+            return RecoveryRetryResult(
+                session_id=session_id,
+                turn_id=turn_id,
+                old_tool_call_ids=tuple(item.tool_call_id for item in inspection.interrupted_tools),
+                new_tool_call_ids=tuple(new_call_ids),
+                tool_results=tuple(results),
+                completed_at=completed_at,
+            )
+        finally:
+            writer.close()
 
     def _build_frame(
         self,
@@ -931,9 +1078,21 @@ class AgentTurnApplication:
         started_event = self._append_tool_event(
             writer,
             SessionEventType.TOOL_STARTED,
-            {"tool_call_id": call.tool_call_id, "name": call.name},
+            {
+                "tool_call_id": call.tool_call_id,
+                "name": call.name,
+                "recovery": {
+                    "tool_name": call.name,
+                    "arguments": cast(dict[str, JSONValue], call.arguments),
+                },
+            },
             turn_id=turn_id,
             causation_id=validated_event.event_id if validated_event else causation_id,
+        )
+        workspace.begin_tool_recovery(
+            call.tool_call_id,
+            call.name,
+            {"arguments": cast(dict[str, JSONValue], call.arguments)},
         )
         try:
             result = await asyncio.wait_for(

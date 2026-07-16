@@ -45,7 +45,11 @@ class SessionEventType(StrEnum):
     CONFIGURATION_CHANGED = "configuration.changed"
     CONTEXT_MANIFEST_RECORDED = "context.manifest.recorded"
     INSTRUCTION_CHANGED = "instruction.changed"
+    RESUME_RECOVERY_INSPECTED = "resume.recovery.inspected"
+    RESUME_RECOVERY_ABANDONED = "resume.recovery.abandoned"
+    RESUME_RECOVERY_RETRIED = "resume.recovery.retried"
     PLAN_UPDATED = "plan.updated"
+    PLAN_RESET = "plan.reset"
     TOOL_PROPOSED = "tool.proposed"
     TOOL_VALIDATED = "tool.validated"
     TOOL_STARTED = "tool.started"
@@ -228,7 +232,7 @@ class SessionProjection:
         """Return the latest visible Plan snapshot, if one exists."""
 
         for turn in reversed(self.turns):
-            if turn.plan is not None:
+            if turn.status is SessionStatus.ACTIVE:
                 return turn.plan
         return None
 
@@ -300,6 +304,13 @@ def rebuild_projection(events: tuple[SessionEvent, ...]) -> SessionProjection:
             continue
 
         if event_type is SessionEventType.INSTRUCTION_CHANGED:
+            continue
+
+        if event_type in {
+            SessionEventType.RESUME_RECOVERY_INSPECTED,
+            SessionEventType.RESUME_RECOVERY_ABANDONED,
+            SessionEventType.RESUME_RECOVERY_RETRIED,
+        }:
             continue
 
         if event_type is SessionEventType.ARTIFACT_WRITTEN:
@@ -382,6 +393,8 @@ def rebuild_projection(events: tuple[SessionEvent, ...]) -> SessionProjection:
                 plan=plan,
                 plan_snapshots=(*turn.plan_snapshots, plan),
             )
+        elif event_type is SessionEventType.PLAN_RESET:
+            turns[turn.turn_id] = replace(turn, plan=None)
         elif event_type is SessionEventType.USER_MESSAGE:
             content = _payload_string(event, "content")
             user_message = UserMessage(content)

@@ -64,6 +64,22 @@ The structured observation produced by a Tool, containing either bounded success
 
 A Tool Call that was recorded as running but had no result when its Session was recovered after an abnormal process exit. Its side effects are unknown, so it is never retried automatically and must be reconciled by inspecting actual state.
 
+## Resume Inspection
+
+The validated, read-only recovery view assembled before a Session continues. It identifies unfinished Tool Calls, open Provider requests, current Workspace evidence, instruction hashes, blocking conditions, and available recovery choices without claiming an uncertain effect succeeded.
+
+## Recovery Evidence
+
+Bounded Workspace, Checkpoint, process, and output facts collected for an Interrupted Tool Call. Recovery Evidence supports inspection and a new authorized call but never becomes a guessed successful Tool Result.
+
+## Resume Choice
+
+One of the four explicit recovery actions: inspect evidence, abandon the uncertain call, retry through a newly validated and authorized Turn, or exit without changing the uncertain history.
+
+## Plan Reset
+
+An observable Session Event that removes an incompatible active Plan from the resumable projection after an interrupted Turn is closed. Original Plan snapshots remain in the event history.
+
 ## Permission Policy
 
 The selected rules that decide whether a proposed tool call runs automatically, requires user confirmation, or is rejected.

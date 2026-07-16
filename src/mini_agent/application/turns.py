@@ -473,7 +473,14 @@ def _previous_instruction_hashes(
 ) -> tuple[tuple[str, str], ...]:
     if resumed_session is None or not resumed_session.context_manifests:
         return ()
-    raw_hashes = resumed_session.context_manifests[-1].get("instruction_hashes", [])
+    raw_hashes: object = resumed_session.context_manifests[-1].get("instruction_hashes", [])
+    for event in reversed(resumed_session.events):
+        if event.event_type != SessionEventType.INSTRUCTION_CHANGED:
+            continue
+        changed = event.payload.get("current_hashes")
+        if isinstance(changed, list):
+            raw_hashes = changed
+        break
     if not isinstance(raw_hashes, list):
         return ()
     hashes: list[tuple[str, str]] = []

@@ -15,7 +15,11 @@ from typer._click.exceptions import UsageError
 from mini_agent import __version__
 from mini_agent.adapters.clocks import SystemClock
 from mini_agent.adapters.ids import UUIDIdGenerator
-from mini_agent.adapters.session_store import SessionStore
+from mini_agent.adapters.session_store import (
+    ResumeChoice,
+    SessionStore,
+    SessionStoreError,
+)
 from mini_agent.application.cancellation import ForcedInterrupt, InterruptController
 from mini_agent.application.ports import ContextBuilder as ContextBuilderPort
 from mini_agent.application.rendering import BoundedStreamRenderer
@@ -246,11 +250,74 @@ def resume_session(
     session_id: Annotated[str, typer.Argument(help="The Session ID to resume.")],
     task: Annotated[str | None, typer.Argument(help="The next task for the Session.")] = None,
 ) -> None:
-    """Resume a completed text-only Session from its event history."""
+    """Resume a Session after explicit, evidence-based interruption recovery."""
 
+    store = _store_for_current_workspace()
+    try:
+        inspection = store.inspect_resume(session_id)
+        if inspection.blocked_reason is not None:
+            typer.echo(f"Resume blocked: {inspection.blocked_reason}", err=True)
+            raise typer.Exit(code=1)
+        if inspection.instruction_change:
+            typer.echo(
+                "Instruction change detected; current AGENTS.md hashes will be recorded "
+                "before continuation."
+            )
+            typer.echo(
+                json.dumps(
+                    {
+                        "previous": inspection.previous_instruction_hashes,
+                        "current": inspection.current_instruction_hashes,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        if not inspection.requires_recovery:
+            store.record_instruction_change(session_id)
+        if inspection.requires_recovery:
+            typer.echo("Interrupted work was found; no Tool Result has been assumed successful.")
+            typer.echo(
+                json.dumps(
+                    [item.as_dict() for item in inspection.interrupted_tools],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            )
+            choice = _resume_choice_prompt()
+            while choice is ResumeChoice.INSPECT:
+                outcome = store.reconcile_resume(session_id, choice)
+                typer.echo("Inspection recorded. Evidence:")
+                typer.echo(
+                    json.dumps(
+                        [item.as_dict() for item in outcome.inspection.interrupted_tools],
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                )
+                choice = _resume_choice_prompt()
+            if choice is ResumeChoice.EXIT:
+                typer.echo("Resume exited; Session history was left without a guessed result.")
+                return
+            store.reconcile_resume(session_id, choice)
+    except SessionStoreError as exc:
+        typer.echo(f"Resume failed safely: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
     if task is None:
         task = typer.prompt("You")
-    asyncio.run(_run_turn(task, Path.cwd(), _store_for_current_workspace(), session_id))
+    asyncio.run(_run_turn(task, Path.cwd(), store, session_id))
+
+
+def _resume_choice_prompt() -> ResumeChoice:
+    """Prompt only for the four recovery actions allowed by the contract."""
+
+    while True:
+        value = (
+            typer.prompt("Recovery [inspect/abandon/retry/exit]", default="exit").strip().lower()
+        )
+        try:
+            return ResumeChoice(value)
+        except ValueError:
+            typer.echo("Choose inspect, abandon, retry, or exit.", err=True)
 
 
 @app.command("run", hidden=True)

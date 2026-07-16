@@ -184,7 +184,7 @@ class ShellTool:
 
     async def execute(self, workspace: Workspace, arguments: BaseModel) -> ToolResult:
         request = _as_shell_input(arguments)
-        call_id = str(getattr(arguments, "tool_call_id", "shell"))
+        call_id = str(workspace.active_tool_call_id or getattr(arguments, "tool_call_id", "shell"))
         try:
             target = workspace.resolve_read(request.working_directory, directory=True)
             classification = classify_shell_command(request.command)
@@ -220,6 +220,12 @@ class ShellTool:
                 message="Shell working directory could not be validated",
             )
 
+        workspace.update_tool_recovery(
+            command=redact_secrets(request.command),
+            working_directory=target.relative_path,
+            captured_preview={"stdout": "", "stderr": ""},
+            process_evidence={"state": "not-started"},
+        )
         environment, removed_secrets = filtered_child_environment()
         started = time.monotonic()
         try:
@@ -229,6 +235,10 @@ class ShellTool:
                 environment=environment,
             )
         except (OSError, ValueError) as exc:
+            workspace.update_tool_recovery(
+                state="finished",
+                process_evidence={"state": "spawn-failed"},
+            )
             return _shell_failure(
                 call_id,
                 code="spawn-failed",
@@ -237,6 +247,11 @@ class ShellTool:
                 working_directory=target.relative_path,
             )
 
+        process_id = getattr(process, "pid", None)
+        workspace.update_tool_recovery(
+            state="running",
+            process_evidence={"state": "running", "pid": process_id},
+        )
         try:
             execution = await _wait_for_process(
                 process,
@@ -256,6 +271,20 @@ class ShellTool:
             )
 
         data = _execution_data(execution, target.relative_path)
+        workspace.update_tool_recovery(
+            state="finished",
+            captured_preview={
+                "stdout": execution.stdout[:4096],
+                "stderr": execution.stderr[:4096],
+            },
+            process_evidence={
+                "state": "terminated" if not execution.uncertain else "unknown",
+                "pid": process_id,
+                "returncode": execution.returncode,
+                "termination": execution.termination,
+                "uncertain": execution.uncertain,
+            },
+        )
         if execution.uncertain:
             return ToolResult.failed(
                 _call(call_id),
