@@ -609,9 +609,10 @@ class AgentTurnApplication:
                         result,
                         writer,
                         configuration=effective_configuration,
-                        max_output_bytes=min(
-                            self._tool_registry.require(call.name).limits.max_output_bytes,
-                            MAX_TOOL_RESPONSE_BYTES,
+                        max_output_bytes=_max_tool_output_bytes(
+                            self._tool_registry,
+                            call,
+                            result,
                         ),
                         threshold=(
                             effective_configuration.artifact_threshold_bytes
@@ -778,9 +779,10 @@ class AgentTurnApplication:
                     result,
                     writer,
                     configuration=effective_configuration,
-                    max_output_bytes=min(
-                        self._tool_registry.require(call.name).limits.max_output_bytes,
-                        MAX_TOOL_RESPONSE_BYTES,
+                    max_output_bytes=_max_tool_output_bytes(
+                        self._tool_registry,
+                        call,
+                        result,
                     ),
                     threshold=(
                         effective_configuration.artifact_threshold_bytes
@@ -1051,10 +1053,13 @@ class AgentTurnApplication:
     ) -> tuple[ToolResult, str | None]:
         try:
             validated = self._tool_registry.validate(call)
-        except ToolValidationError:
-            return invalid_result(
-                call, code="invalid-input", message="Tool arguments are invalid"
-            ), causation_id
+        except ToolValidationError as exc:
+            message = (
+                "Tool name is not registered"
+                if exc.code == "unknown-tool"
+                else "Tool arguments are invalid"
+            )
+            return invalid_result(call, code=exc.code, message=message), causation_id
         call = validated.call.model_copy(deep=True)
         tool = self._tool_registry.require(call.name)
         preflight_failure: ToolResult | None = None
@@ -1638,6 +1643,30 @@ def _tool_failure_category(category: str) -> str:
     if category in {"cancellation"}:
         return "cancellation"
     return "tool-execution"
+
+
+def _max_tool_output_bytes(
+    registry: ToolRegistry,
+    call: ToolCall,
+    result: ToolResult,
+) -> int:
+    """Return the bound without re-resolving unknown Tool calls.
+
+    Validation already performed the only meaningful registry lookup for an
+    unknown call.  Looking up its name again while materializing the result
+    would turn a recoverable model observation into an internal Turn failure.
+    The global bound is sufficient for this bounded validation message; known
+    Tool results still use the registered Tool's advertised limit.
+    """
+
+    if (
+        result.outcome is ToolOutcome.INVALID
+        and result.error is not None
+        and result.error.category == "tool-validation"
+        and result.error.code == "unknown-tool"
+    ):
+        return MAX_TOOL_RESPONSE_BYTES
+    return min(registry.require(call.name).limits.max_output_bytes, MAX_TOOL_RESPONSE_BYTES)
 
 
 _PLAN_TOOL_NAMES = {

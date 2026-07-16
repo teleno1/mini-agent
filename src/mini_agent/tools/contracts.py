@@ -234,9 +234,16 @@ class ToolDefinition(BaseModel):
 class ToolValidationError(ValueError):
     """Raised when a Tool name or input schema is invalid."""
 
-    def __init__(self, message: str, *, call: ToolCall | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        call: ToolCall | None = None,
+        code: str = "invalid-input",
+    ) -> None:
         super().__init__(message)
         self.call = call
+        self.code = code
 
 
 @runtime_checkable
@@ -295,7 +302,10 @@ class ToolRegistry:
     def require(self, name: str) -> Tool:
         tool = self.get(name)
         if tool is None:
-            raise ToolValidationError(f"unknown Tool: {name}")
+            raise ToolValidationError(
+                f"unknown Tool: {name}",
+                code="unknown-tool",
+            )
         return tool
 
     def definitions(self) -> tuple[ToolDefinition, ...]:
