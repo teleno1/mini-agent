@@ -1,6 +1,7 @@
 import asyncio
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -9,6 +10,7 @@ import pytest
 from mini_agent.adapters.clocks import DeterministicClock
 from mini_agent.adapters.ids import DeterministicIdGenerator
 from mini_agent.adapters.session_store import SessionStore
+from mini_agent.application.agent import AgentTurnApplication
 from mini_agent.application.rendering import BoundedStreamRenderer
 from mini_agent.application.turns import TextTurnApplication
 from mini_agent.context import ContextBuilder
@@ -34,6 +36,9 @@ from mini_agent.providers.openai_compatible import (
     OpenAICompatibleModelProvider,
     ProviderTimeouts,
 )
+from mini_agent.tools.contracts import PermissionDecision, PermissionRequest, ToolRegistry
+from mini_agent.tools.files import ReadFileTool
+from mini_agent.tools.workspace import Workspace
 
 
 class _DelayedStream(httpx.AsyncByteStream):
@@ -50,6 +55,12 @@ class _TimedStream(httpx.AsyncByteStream):
         for delay, chunk in self._chunks:
             await asyncio.sleep(delay)
             yield chunk
+
+
+class _AllowPermissionGate:
+    def decide(self, request: PermissionRequest) -> PermissionDecision:
+        del request
+        return PermissionDecision.ALLOW
 
 
 def _encode_sse(*events: dict[str, Any] | str) -> bytes:
@@ -219,7 +230,7 @@ async def test_real_adapter_preserves_structured_tools_and_message_pairing(tmp_p
         "system",
         "system",
         "system",
-        "developer",
+        "system",
         "user",
         "assistant",
         "tool",
@@ -353,7 +364,7 @@ async def test_fake_and_real_adapters_share_stream_and_context_contracts(
             "system",
             "system",
             "system",
-            "developer",
+            "system",
             "assistant",
             "tool",
             "user",
@@ -428,6 +439,189 @@ async def test_real_adapter_normalizes_tool_call_deltas_and_stable_ids() -> None
         ResponseCompleted("tool_calls"),
     ]
     assert provider.supports_structured_tools is True
+
+
+@pytest.mark.asyncio
+async def test_real_adapter_completes_tool_calls_before_same_chunk_usage() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(
+            200,
+            content=_encode_sse(
+                {
+                    "id": "deepseek-style-request",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {
+                                "role": "assistant",
+                                "content": None,
+                                "reasoning_content": "",
+                            },
+                            "finish_reason": None,
+                        }
+                    ],
+                    "usage": None,
+                },
+                {
+                    "id": "deepseek-style-request",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call-1",
+                                        "type": "function",
+                                        "function": {"name": "read_file", "arguments": "{}"},
+                                    }
+                                ]
+                            },
+                            "finish_reason": None,
+                        }
+                    ],
+                    "usage": None,
+                },
+                {
+                    "id": "deepseek-style-request",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"content": "", "reasoning_content": None},
+                            "finish_reason": "tool_calls",
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": 20,
+                        "completion_tokens": 5,
+                        "total_tokens": 25,
+                    },
+                },
+                "[DONE]",
+            ),
+        )
+
+    provider = OpenAICompatibleModelProvider(
+        "https://provider.test/v1",
+        model="deepseek-v4-flash",
+        transport=httpx.MockTransport(handler),
+        max_retries=0,
+    )
+
+    events = await _collect_events(provider)
+
+    assert events == [
+        ResponseStarted("deepseek-style-request"),
+        ToolCallStarted("call-1", "read_file"),
+        ToolCallArgumentDelta("call-1", "{}"),
+        ToolCallCompleted("call-1"),
+        UsageReported(20, 5),
+        ResponseCompleted("tool_calls"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_executes_tool_after_same_chunk_usage(tmp_path: Path) -> None:
+    (tmp_path / "note.txt").write_text("project evidence", encoding="utf-8")
+    request_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        del request
+        request_count += 1
+        if request_count == 1:
+            return httpx.Response(
+                200,
+                content=_encode_sse(
+                    {
+                        "id": "tool-request",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {
+                                    "tool_calls": [
+                                        {
+                                            "index": 0,
+                                            "id": "call-read",
+                                            "type": "function",
+                                            "function": {
+                                                "name": "read_file",
+                                                "arguments": '{"path":"note.txt"}',
+                                            },
+                                        }
+                                    ]
+                                },
+                                "finish_reason": None,
+                            }
+                        ],
+                        "usage": None,
+                    },
+                    {
+                        "id": "tool-request",
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
+                        "usage": {
+                            "prompt_tokens": 20,
+                            "completion_tokens": 5,
+                            "total_tokens": 25,
+                        },
+                    },
+                    "[DONE]",
+                ),
+            )
+        return httpx.Response(
+            200,
+            content=_encode_sse(
+                {
+                    "id": "final-request",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"content": "I can see the project."},
+                            "finish_reason": None,
+                        }
+                    ],
+                    "usage": None,
+                },
+                {
+                    "id": "final-request",
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                    "usage": {
+                        "prompt_tokens": 30,
+                        "completion_tokens": 6,
+                        "total_tokens": 36,
+                    },
+                },
+                "[DONE]",
+            ),
+        )
+
+    clock = DeterministicClock(datetime(2026, 1, 1, tzinfo=UTC))
+    ids = DeterministicIdGenerator()
+    provider = OpenAICompatibleModelProvider(
+        "https://provider.test/v1",
+        model="deepseek-v4-flash",
+        transport=httpx.MockTransport(handler),
+        max_retries=0,
+        id_generator=ids,
+    )
+    application = AgentTurnApplication(
+        provider=provider,
+        workspace=Workspace(tmp_path),
+        tool_registry=ToolRegistry([ReadFileTool()]),
+        clock=clock,
+        id_generator=ids,
+        session_store=SessionStore(tmp_path, clock=clock, id_generator=ids),
+        context_builder=ContextBuilder(tmp_path),
+        permission_gate=_AllowPermissionGate(),
+    )
+
+    result = await application.run("Can you see this project?")
+
+    assert request_count == 2
+    assert result.tool_call_count == 1
+    assert "project evidence" in result.tool_results[0].content
+    assert result.assistant_message.content == "I can see the project."
 
 
 @pytest.mark.asyncio

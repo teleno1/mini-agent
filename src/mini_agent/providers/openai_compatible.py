@@ -132,6 +132,7 @@ class _ResponseState:
         self.role_seen = False
         self.finish_reason: str | None = None
         self.usage_seen = False
+        self.usage: tuple[int, int] | None = None
         self.tool_calls: dict[int, _ToolAccumulator] = {}
 
 
@@ -572,9 +573,6 @@ class OpenAICompatibleModelProvider:
             state.started = True
             events.append(ResponseStarted(state.request_id))
 
-        if usage_value is not None:
-            events.extend(_usage_events(usage_value, state))
-
         if choices:
             choice = choices[0]
             if not isinstance(choice, dict):
@@ -611,6 +609,8 @@ class OpenAICompatibleModelProvider:
                         _stream_failure("stop-changed", "the Provider changed its stop reason")
                     )
                 state.finish_reason = cast(str, finish_reason)
+        if usage_value is not None:
+            _record_usage(usage_value, state)
         return tuple(events)
 
     def _delta_events(
@@ -679,13 +679,14 @@ def _request_payload(
 
 def _message_payload(message: Message | ContextMessage) -> dict[str, object]:
     if isinstance(message, ContextMessage):
+        role = "system" if message.role == "developer" else message.role
         if message.message is not None:
-            return _message_payload_with_role(message.message, message.role)
+            return _message_payload_with_role(message.message, role)
         if message.role == "tool":
             raise ProviderConfigurationError(
                 "a Context Frame Tool message is missing its Tool Call ID"
             )
-        return {"role": message.role, "content": message.content}
+        return {"role": role, "content": message.content}
     return _message_payload_with_role(message, message.role)
 
 
@@ -830,7 +831,7 @@ def _tool_delta_events(raw_call: object, state: _ResponseState) -> list[StreamEv
     return events
 
 
-def _usage_events(value: object, state: _ResponseState) -> tuple[StreamEvent, ...]:
+def _record_usage(value: object, state: _ResponseState) -> None:
     if state.usage_seen:
         raise _ProtocolViolation(
             _stream_failure("duplicate-usage", "the Provider reported usage twice")
@@ -853,7 +854,7 @@ def _usage_events(value: object, state: _ResponseState) -> tuple[StreamEvent, ..
             _stream_failure("usage-fields", "the Provider usage counts were invalid")
         )
     state.usage_seen = True
-    return (UsageReported(input_tokens, output_tokens),)
+    state.usage = (input_tokens, output_tokens)
 
 
 def _finish_response(state: _ResponseState) -> tuple[StreamEvent, ...]:
@@ -897,6 +898,8 @@ def _finish_response(state: _ResponseState) -> tuple[StreamEvent, ...]:
                 )
             )
         events.append(ToolCallCompleted(call.tool_call_id))
+    if state.usage is not None:
+        events.append(UsageReported(*state.usage))
     events.append(ResponseCompleted(cast(Any, state.finish_reason)))
     return tuple(events)
 

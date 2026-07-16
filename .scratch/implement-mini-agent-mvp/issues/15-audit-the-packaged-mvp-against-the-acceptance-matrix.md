@@ -2,7 +2,7 @@
 
 **What to build:** Maintainers receive objective evidence that the installed Mini Agent satisfies every agreed MVP capability on supported platforms, with any discovered implementation gap fixed without silently adding product scope.
 
-**Blocked by:** 02 - Establish offline quality gates and distributable artifacts; 11 - Compact long Sessions without losing observable state; 13 - Reconcile interrupted work on Resume; 14 - Deliver the production conversational CLI; 16 - Fail production startup when Provider authentication is unavailable; 17 - Deny non-interactive permission prompts deterministically; 18 - Preserve unknown Tool calls as invalid results; 19 - Report only successful Shell verification.
+**Blocked by:** 02 - Establish offline quality gates and distributable artifacts; 11 - Compact long Sessions without losing observable state; 13 - Reconcile interrupted work on Resume; 14 - Deliver the production conversational CLI; 16 - Fail production startup when Provider authentication is unavailable; 17 - Deny non-interactive permission prompts deterministically; 18 - Preserve unknown Tool calls as invalid results; 19 - Report only successful Shell verification; 20 - Normalize Provider usage after completed Tool Calls.
 
 **Status:** ready-for-agent
 
