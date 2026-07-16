@@ -9,6 +9,7 @@ from mini_agent.application.agent import (
     RecoveryRetryResult,
     SafeReadPermissionGate,
     TurnBudgets,
+    build_completion_report,
 )
 from mini_agent.application.cancellation import ForcedInterrupt, InterruptController
 from mini_agent.application.permissions import (
@@ -27,6 +28,7 @@ __all__ = [
     "AgentTurnApplication",
     "AgentTurnResult",
     "RecoveryRetryResult",
+    "build_completion_report",
     "ForcedInterrupt",
     "CompletionReport",
     "ConfirmationChoice",

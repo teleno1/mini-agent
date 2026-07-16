@@ -10,7 +10,7 @@ import os
 import random
 import threading
 import warnings
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any, cast
@@ -499,7 +499,7 @@ class AgentTurnApplication:
                     raise AgentLimitError("token usage budget exhausted")
 
                 if not response.message.tool_calls:
-                    report = _completion_report(tool_observations)
+                    report = build_completion_report(tool_observations)
                     plan_event: SessionEvent | None = None
                     if plan is not None:
                         plan = _finish_plan(plan, report, self._clock.now())
@@ -1806,21 +1806,30 @@ def _finish_plan(
     )
 
 
-def _completion_report(
-    observations: list[tuple[ToolCall, ToolResult]],
+def build_completion_report(
+    observations: Iterable[tuple[ToolCall, ToolResult]],
 ) -> CompletionReport:
+    """Build a factual report from the Tool observations of a Turn.
+
+    Shell commands are verification evidence only after a successful Tool
+    Result. Other outcomes remain unresolved observations, including an
+    unsuccessful Shell attempt followed by a successful retry.
+    """
+
     changed_files: set[str] = set()
     verification: list[str] = []
     unresolved: dict[str, str] = {}
     changed_tools = {"apply_patch", "create_file"}
+    has_successful_verification = False
     for call, result in observations:
         raw_changed = result.data.get("changed_files", [])
         if call.name in changed_tools and isinstance(raw_changed, list):
             changed_files.update(item for item in raw_changed if isinstance(item, str))
-        if call.name == "shell":
-            command = call.arguments.get("command")
-            if isinstance(command, str) and command.strip():
-                verification.append(command.strip())
+        if call.name == "shell" and result.outcome is ToolOutcome.SUCCESS:
+            command = _shell_command(call)
+            if command is not None:
+                verification.append(command)
+                has_successful_verification = True
         observation_key = json.dumps(
             {"name": call.name, "arguments": call.arguments},
             ensure_ascii=False,
@@ -1829,18 +1838,38 @@ def _completion_report(
         )
         if result.outcome is ToolOutcome.SUCCESS:
             unresolved.pop(observation_key, None)
-        if result.outcome is not ToolOutcome.SUCCESS:
+        else:
             code = result.error.code if result.error is not None else result.outcome.value
-            unresolved[observation_key] = (
-                f"Tool Call {call.tool_call_id} ended with {result.outcome.value} ({code})"
-            )
+            if call.name == "shell":
+                # Shell attempts are verification evidence only when the host
+                # proves success. Keep each unsuccessful attempt separately so
+                # a later retry cannot erase the failed/uncertain observation.
+                command = _shell_command(call)
+                description = (
+                    f"Shell command {command!r} (Tool Call {call.tool_call_id})"
+                    if command is not None
+                    else f"Shell Tool Call {call.tool_call_id}"
+                )
+                unresolved[f"shell:{call.tool_call_id}"] = (
+                    f"{description} ended with {result.outcome.value} ({code})"
+                )
+            else:
+                unresolved[observation_key] = (
+                    f"Tool Call {call.tool_call_id} ended with {result.outcome.value} ({code})"
+                )
     if not verification:
         verification = ["unavailable"]
     unresolved_items = tuple(unresolved.values())
     if unresolved_items:
         outcome = "completed-with-unresolved-work"
-        next_action = "Resolve the reported Tool observations and rerun verification."
-    elif verification == ["unavailable"] and changed_files:
+        if not has_successful_verification:
+            next_action = (
+                "Verification is unavailable; review the reported Tool observations and "
+                "safely rerun the relevant verification command."
+            )
+        else:
+            next_action = "Resolve the reported Tool observations and rerun verification."
+    elif not has_successful_verification and changed_files:
         outcome = "completed"
         next_action = "Run the relevant verification command before delivery."
     else:
@@ -1853,6 +1882,13 @@ def _completion_report(
         unresolved_work=unresolved_items,
         next_action=next_action,
     )
+
+
+def _shell_command(call: ToolCall) -> str | None:
+    command = call.arguments.get("command")
+    if isinstance(command, str) and command.strip():
+        return command.strip()
+    return None
 
 
 def _history_without_current_user(

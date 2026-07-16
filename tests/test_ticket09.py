@@ -180,8 +180,10 @@ async def test_ticket09_fake_turn_orders_read_edit_test_denial_replan_and_report
     assert result.model_request_count == 6
     assert result.tool_call_count == 5
     assert result.completion_report.changed_files == ("note.txt",)
-    assert result.completion_report.verification == ("pytest -q", "pytest -q")
-    assert result.completion_report.unresolved_work == ()
+    assert result.completion_report.verification == ("pytest -q",)
+    assert len(result.completion_report.unresolved_work) == 1
+    assert "pytest -q" in result.completion_report.unresolved_work[0]
+    assert "failed (test-failed)" in result.completion_report.unresolved_work[0]
     assert result.completion_report.text.startswith("Outcome: completed")
 
     # Every continuation is a fresh derived frame and every observation is
