@@ -42,6 +42,12 @@ class PermissionPreview:
 class UserInteraction(Protocol):
     """The narrow confirmation seam used by the host Permission Policy."""
 
+    @property
+    def is_interactive(self) -> bool:
+        """Whether this interaction can safely receive terminal authority."""
+
+        ...
+
     def confirm(self, preview: PermissionPreview) -> ConfirmationChoice | str | bool:
         """Return one focused confirmation choice."""
 
@@ -135,6 +141,8 @@ class PermissionPolicyGate:
         automatic, rule, reason = self._mode_default(request)
         if automatic:
             return self._record(PermissionDecision.ALLOW, scope="none", rule=rule, reason=reason)
+        if self.interaction is not None and not _interaction_is_interactive(self.interaction):
+            return self._deny_noninteractive()
         return self._confirm(request, key, rule=rule, reason=reason)
 
     def _mode_default(self, request: PermissionRequest) -> tuple[bool, str, str]:
@@ -243,6 +251,14 @@ class PermissionPolicyGate:
             reason="user denied the focused confirmation",
         )
 
+    def _deny_noninteractive(self) -> PermissionDecision:
+        return self._record(
+            PermissionDecision.DENY,
+            scope="none",
+            rule="non-interactive-input",
+            reason="confirmation was required but terminal input is not interactive",
+        )
+
     def _grant_key(self, request: PermissionRequest) -> PermissionGrant:
         argument_hash = (
             request.call.argument_hash
@@ -271,7 +287,7 @@ def _normalize_choice(
     value: ConfirmationChoice | str | bool | PermissionDecision,
 ) -> ConfirmationChoice:
     if isinstance(value, bool):
-        return ConfirmationChoice.ALLOW_ONCE if value else ConfirmationChoice.DENY
+        return ConfirmationChoice.DENY
     if isinstance(value, PermissionDecision):
         return (
             ConfirmationChoice.ALLOW_ONCE
@@ -281,18 +297,17 @@ def _normalize_choice(
     if isinstance(value, ConfirmationChoice):
         return value
     normalized = value.strip().lower().replace("_", "-").replace(" ", "-")
-    if normalized in {"allow", "allow-once", "yes", "y"}:
-        return ConfirmationChoice.ALLOW_ONCE
-    if normalized in {
-        "allow-for-session",
-        "allow-exact-for-session",
-        "session",
-        "allow-session",
-    }:
-        return ConfirmationChoice.ALLOW_FOR_SESSION
-    if normalized in {"cancel", "interrupt", "quit"}:
-        return ConfirmationChoice.CANCEL
-    return ConfirmationChoice.DENY
+    try:
+        return ConfirmationChoice(normalized)
+    except ValueError:
+        return ConfirmationChoice.DENY
+
+
+def _interaction_is_interactive(interaction: object) -> bool:
+    """Read the host-provided capability without trusting piped choice text."""
+
+    capability = getattr(interaction, "is_interactive", None)
+    return capability if isinstance(capability, bool) else False
 
 
 def _request_argument_hash(request: PermissionRequest) -> str:

@@ -45,6 +45,16 @@ from mini_agent.tools.shell import (
 from mini_agent.tools.workspace import Workspace
 
 
+class _InteractiveConfirmation:
+    is_interactive = True
+
+    def __init__(self, callback):
+        self._callback = callback
+
+    def confirm(self, preview):
+        return self._callback(preview)
+
+
 def _command_for_output(text: str) -> str:
     if os.name == "nt":
         return f"Write-Output '{text}'"
@@ -167,7 +177,9 @@ def test_permission_modes_limit_full_auto_to_recognized_local_shell() -> None:
     previews = []
     asking_gate = PermissionPolicyGate(
         PermissionMode.FULL_AUTO,
-        interaction=lambda preview: previews.append(preview) or ConfirmationChoice.ALLOW_ONCE,
+        interaction=_InteractiveConfirmation(
+            lambda preview: previews.append(preview) or ConfirmationChoice.ALLOW_ONCE
+        ),
     )
     assert asking_gate.decide(unsafe_request) is PermissionDecision.ALLOW
     assert len(previews) == 1

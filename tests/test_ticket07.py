@@ -44,6 +44,16 @@ def _patch(*operations: dict[str, object]) -> ApplyPatchInput:
     return ApplyPatchInput.model_validate({"operations": list(operations)})
 
 
+class _InteractiveChoiceScript:
+    is_interactive = True
+
+    def __init__(self, choices):
+        self._choices = iter(choices)
+
+    def confirm(self, _preview):
+        return next(self._choices)
+
+
 @pytest.mark.asyncio
 async def test_multi_file_exact_patch_commits_and_creates_checkpoint(tmp_path: Path) -> None:
     (tmp_path / "update.txt").write_text("before\n", encoding="utf-8")
@@ -163,8 +173,12 @@ def test_permission_modes_and_exact_session_grants() -> None:
     assert PermissionPolicyGate(PermissionMode.SUGGEST).decide(request).value == "deny"
     assert PermissionPolicyGate(PermissionMode.AUTO_EDIT).decide(request).value == "allow"
 
-    choices = iter([ConfirmationChoice.ALLOW_FOR_SESSION, ConfirmationChoice.DENY])
-    gate = PermissionPolicyGate(PermissionMode.SUGGEST, interaction=lambda _preview: next(choices))
+    gate = PermissionPolicyGate(
+        PermissionMode.SUGGEST,
+        interaction=_InteractiveChoiceScript(
+            [ConfirmationChoice.ALLOW_FOR_SESSION, ConfirmationChoice.DENY]
+        ),
+    )
     assert gate.decide(request).value == "allow"
     assert gate.decide(request).value == "allow"
     changed = PermissionRequest(
@@ -186,10 +200,11 @@ def test_protected_writes_always_require_focused_confirmation(tmp_path: Path) ->
             summary="modify Protected Path instructions",
         ),
     )
-    choices = iter([ConfirmationChoice.ALLOW_FOR_SESSION, ConfirmationChoice.DENY])
     gate = PermissionPolicyGate(
         PermissionMode.FULL_AUTO,
-        interaction=lambda _preview: next(choices),
+        interaction=_InteractiveChoiceScript(
+            [ConfirmationChoice.ALLOW_FOR_SESSION, ConfirmationChoice.DENY]
+        ),
     )
     assert gate.decide(request).value == "allow"
     # Protected writes are deliberately not silently reused from a Session grant.

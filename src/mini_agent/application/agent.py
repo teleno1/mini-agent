@@ -1172,13 +1172,21 @@ class AgentTurnApplication:
                 validated_event.event_id if validated_event else causation_id,
             )
         if decision is not PermissionDecision.ALLOW:
+            decision_reason = getattr(decision_metadata, "reason", None)
+            non_interactive = (
+                getattr(decision_metadata, "matched_rule", None) == "non-interactive-input"
+            )
             return (
                 ToolResult.failed(
                     call,
                     outcome=ToolOutcome.DENIED,
                     category="permission",
-                    code="read-only-policy",
-                    message="Tool operation was denied by the host Permission Policy",
+                    code="non-interactive-permission" if non_interactive else "read-only-policy",
+                    message=(
+                        decision_reason
+                        if non_interactive and decision_reason
+                        else "Tool operation was denied by the host Permission Policy"
+                    ),
                 ),
                 validated_event.event_id if validated_event else causation_id,
             )

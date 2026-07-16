@@ -159,7 +159,10 @@ def _startup_provider_check(
             store,
             cli_values=cli_values,
             session_id=None,
-            interaction=TerminalPermissionInteraction(ConversationPresenter(interactive=True)),
+            interaction=TerminalPermissionInteraction(
+                ConversationPresenter(interactive=True),
+                interactive=_is_terminal_input(),
+            ),
             permission_gate=PermissionPolicyGate(),
             provider_factory=provider_factory,
         )
@@ -277,7 +280,7 @@ async def _run_turn(
     values = dict(cli_values or {})
     presenter = ConversationPresenter(interactive=interactive)
     gate = permission_gate or PermissionPolicyGate()
-    interaction = TerminalPermissionInteraction(presenter)
+    interaction = TerminalPermissionInteraction(presenter, interactive=interactive)
     gate.interaction = interaction
     selected_session = session_id
     diagnostics: DiagnosticLogger | None = None
@@ -459,8 +462,9 @@ async def _retry_interrupted_cli(
     gate: PermissionPolicyGate,
     provider_factory: ProviderFactory = production_provider_factory,
 ) -> bool:
-    presenter = ConversationPresenter(interactive=_is_terminal_input())
-    interaction = TerminalPermissionInteraction(presenter)
+    interactive = _is_terminal_input()
+    presenter = ConversationPresenter(interactive=interactive)
+    interaction = TerminalPermissionInteraction(presenter, interactive=interactive)
     gate.interaction = interaction
     provider: ModelProvider | None = None
     try:
@@ -606,6 +610,7 @@ def _interactive_loop(
 ) -> None:
     session_id: str | None = None
     gate = PermissionPolicyGate()
+    interactive = _is_terminal_input()
     typer.echo("Mini Agent interactive Session. Type /help or /exit.")
     while True:
         task = _safe_prompt("You")
@@ -636,7 +641,7 @@ def _interactive_loop(
                 session_id,
                 cli_values=cli_values,
                 permission_gate=gate,
-                interactive=True,
+                interactive=interactive,
                 user_already_rendered=True,
                 provider_factory=provider_factory,
             )

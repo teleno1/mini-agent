@@ -180,7 +180,9 @@ def test_cli_exposes_init_and_config_views_without_credentials(tmp_path: Path) -
     assert '"source": "built-in"' in shown.stdout
 
 
-def test_cli_streams_tool_activity_and_only_prompts_for_a_write(tmp_path: Path) -> None:
+def test_cli_streams_tool_activity_and_denies_write_without_interactive_input(
+    tmp_path: Path,
+) -> None:
     (tmp_path / "README.md").write_text("hello\n", encoding="utf-8")
     read_app = _use_provider(
         [
@@ -208,15 +210,12 @@ def test_cli_streams_tool_activity_and_only_prompts_for_a_write(tmp_path: Path) 
     denied = runner.invoke(
         denied_app,
         ["--workspace", str(tmp_path), "create a file"],
-        input="deny\n",
+        input="allow\n",
     )
 
     assert denied.exit_code == 0
-    assert "Permission needed" in denied.stdout
-    assert "Operation:" in denied.stdout
-    assert "Resources: new.txt" in denied.stdout
-    assert "Reason:" in denied.stdout
-    assert "allow-once/allow-exact-for-session/deny/cancel" in denied.stdout
+    assert "Permission needed" not in denied.stdout
+    assert "Choose [" not in denied.stdout
     assert "create_file (new.txt) - denied" in denied.stdout
     assert not (tmp_path / "new.txt").exists()
 

@@ -287,10 +287,22 @@ class ConversationPresenter:
 class TerminalPermissionInteraction(UserInteraction):
     """Synchronous, fail-closed confirmation adapter for the CLI."""
 
-    def __init__(self, presenter: ConversationPresenter) -> None:
+    def __init__(
+        self,
+        presenter: ConversationPresenter,
+        *,
+        interactive: bool,
+    ) -> None:
         self.presenter = presenter
+        self._is_interactive = interactive
+
+    @property
+    def is_interactive(self) -> bool:
+        return self._is_interactive
 
     def confirm(self, preview: PermissionPreview) -> ConfirmationChoice:
+        if not self.is_interactive:
+            return ConfirmationChoice.DENY
         self.presenter.permission_block(preview)
         prompt = "  Choose [allow-once/allow-exact-for-session/deny/cancel]"
         while True:
@@ -301,18 +313,10 @@ class TerminalPermissionInteraction(UserInteraction):
                 return ConfirmationChoice.DENY
             self.presenter.external_line_finished()
             normalized = value.strip().casefold().replace("_", "-").replace(" ", "-")
-            choices = {
-                "allow-once": ConfirmationChoice.ALLOW_ONCE,
-                "allow": ConfirmationChoice.ALLOW_ONCE,
-                "allow-exact-for-session": ConfirmationChoice.ALLOW_FOR_SESSION,
-                "allow-for-session": ConfirmationChoice.ALLOW_FOR_SESSION,
-                "session": ConfirmationChoice.ALLOW_FOR_SESSION,
-                "deny": ConfirmationChoice.DENY,
-                "no": ConfirmationChoice.DENY,
-                "cancel": ConfirmationChoice.CANCEL,
-            }
-            if normalized in choices:
-                return choices[normalized]
+            try:
+                return ConfirmationChoice(normalized)
+            except ValueError:
+                pass
             self.presenter.recovery(
                 "  Invalid choice; use allow-once, allow-exact-for-session, deny, or cancel."
             )
