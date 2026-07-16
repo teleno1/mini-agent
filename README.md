@@ -1,20 +1,26 @@
 # Mini Agent
 
 Mini Agent is a small, inspectable terminal coding agent for learning how an
-agent loop is put together. The first slice runs entirely offline with a
-scripted Fake Model Provider:
+agent loop is put together. Without an API key it uses a deterministic Fake
+Model Provider, so the CLI can be tried offline:
 
 ```console
 mini-agent "Explain Mini Agent"
 ```
 
-Each turn is stored as UTF-8 JSONL under `.mini-agent/sessions`. List and
-continue completed text-only Sessions with:
+Run without a task to enter an interactive Session. Each turn is stored as
+UTF-8 JSONL under `.mini-agent/sessions`. List and continue Sessions with:
 
 ```console
 mini-agent sessions
 mini-agent resume SESSION_ID "Continue the task"
 ```
+
+The supported views are `init`, `sessions`, `resume`, `config show`, and
+`doctor`. In an interactive Session, `/config show`, `/config set key=value`,
+`/config reset`, `/sessions`, and `/exit` are available. Set
+`MINI_AGENT_API_KEY` to use the configured OpenAI-compatible Provider; the key
+is never read from TOML or displayed by `config show`.
 
 It is an independent educational project. It is not Claude Code, is not
 Anthropic software, and does not promise Claude Code compatibility.

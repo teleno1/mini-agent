@@ -20,6 +20,7 @@ from mini_agent.application.ports import (
     Clock,
     EventObserver,
     IDGenerator,
+    LifecycleObserver,
     ModelProvider,
     PermissionGate,
     ResumedSession,
@@ -234,6 +235,7 @@ class AgentTurnApplication:
         on_event: EventObserver | None = None,
         *,
         session_id: str | None = None,
+        on_lifecycle: LifecycleObserver | None = None,
     ) -> AgentTurnResult:
         user_message = UserMessage(task)
         requested_session_id = session_id
@@ -360,6 +362,7 @@ class AgentTurnApplication:
                     plan=plan,
                     context_summary=context_summary,
                     summary_boundary=summary_boundary,
+                    on_lifecycle=on_lifecycle,
                 )
                 if writer is not None:
                     causation_id = user_event.event_id if user_event is not None else None
@@ -383,6 +386,11 @@ class AgentTurnApplication:
                         timestamp=self._clock.now(),
                     )
                     active_request_event = request_event
+                    _notify_lifecycle(
+                        on_lifecycle,
+                        SessionEventType.MODEL_REQUEST_STARTED.value,
+                        request_event.payload,
+                    )
                 else:
                     request_event = None
 
@@ -426,12 +434,26 @@ class AgentTurnApplication:
                             causation_id=request_event.event_id,
                             timestamp=self._clock.now(),
                         )
+                        _notify_lifecycle(
+                            on_lifecycle,
+                            SessionEventType.MODEL_REQUEST_FAILED.value,
+                            failure_payload,
+                        )
                         active_request_event = None
                     if (
                         _is_safe_provider_retry(failure)
                         and not _stream_has_model_output(stream_events)
                         and retry_count < budgets.max_retries
                     ):
+                        _notify_lifecycle(
+                            on_lifecycle,
+                            "model.request.retrying",
+                            {
+                                "attempt": retry_count + 2,
+                                "max_attempts": budgets.max_retries + 1,
+                                "reason": failure.redacted_description,
+                            },
+                        )
                         await self._wait_before_retry(failure, retry_count)
                         retry_count += 1
                         continue
@@ -462,6 +484,11 @@ class AgentTurnApplication:
                         turn_id=turn_id,
                         causation_id=completed_event.event_id,
                         timestamp=self._clock.now(),
+                    )
+                    _notify_lifecycle(
+                        on_lifecycle,
+                        SessionEventType.MODEL_REQUEST_COMPLETED.value,
+                        completed_event.payload,
                     )
                 else:
                     assistant_event = None
@@ -529,6 +556,11 @@ class AgentTurnApplication:
                         turn_id=turn_id,
                         causation_id=assistant_event.event_id if assistant_event else None,
                     )
+                    _notify_lifecycle(
+                        on_lifecycle,
+                        SessionEventType.PLAN_UPDATED.value,
+                        {"plan": plan.as_dict()},
+                    )
 
                 for block in response.message.tool_calls:
                     if tool_count >= budgets.max_tool_calls:
@@ -550,6 +582,15 @@ class AgentTurnApplication:
                         turn_id=turn_id,
                         causation_id=assistant_event.event_id if assistant_event else None,
                     )
+                    _notify_lifecycle(
+                        on_lifecycle,
+                        SessionEventType.TOOL_PROPOSED.value,
+                        {
+                            "tool_call_id": call.tool_call_id,
+                            "name": call.name,
+                            "arguments": cast(dict[str, JSONValue], call.arguments),
+                        },
+                    )
                     result, terminal_causation = await self._execute_tool(
                         call,
                         writer,
@@ -562,6 +603,7 @@ class AgentTurnApplication:
                             if effective_configuration is not None
                             else "read-only"
                         ),
+                        on_lifecycle=on_lifecycle,
                     )
                     result, terminal_causation = self._materialize_tool_result(
                         result,
@@ -585,6 +627,23 @@ class AgentTurnApplication:
                         turn_id=turn_id,
                         causation_id=terminal_causation,
                     )
+                    _notify_lifecycle(
+                        on_lifecycle,
+                        (
+                            SessionEventType.TOOL_COMPLETED.value
+                            if result.outcome is ToolOutcome.SUCCESS
+                            else SessionEventType.TOOL_INTERRUPTED.value
+                            if result.outcome is ToolOutcome.INTERRUPTED
+                            else SessionEventType.TOOL_FAILED.value
+                        ),
+                        {
+                            "tool_call_id": result.tool_call_id,
+                            "name": result.tool_name,
+                            "outcome": result.outcome.value,
+                            "result_text": result.text,
+                            "result": cast(dict[str, JSONValue], result.model_dump(mode="json")),
+                        },
+                    )
                     execution_workspace.clear_tool_recovery(call.tool_call_id)
                     result_message = ToolResultMessage(
                         call.tool_call_id,
@@ -602,6 +661,11 @@ class AgentTurnApplication:
                             plan,
                             turn_id=turn_id,
                             causation_id=terminal_event.event_id if terminal_event else None,
+                        )
+                        _notify_lifecycle(
+                            on_lifecycle,
+                            SessionEventType.PLAN_UPDATED.value,
+                            {"plan": plan.as_dict()},
                         )
                     if result.outcome in {ToolOutcome.INTERRUPTED, ToolOutcome.CANCELLED}:
                         raise asyncio.CancelledError
@@ -769,6 +833,7 @@ class AgentTurnApplication:
         plan: PlanSnapshot | None,
         context_summary: ContextSummary | None,
         summary_boundary: int,
+        on_lifecycle: LifecycleObserver | None = None,
     ) -> tuple[ContextFrame | None, tuple[Message, ...], ContextSummary | None, int]:
         if self._context_builder is None:
             return None, history, context_summary, summary_boundary
@@ -806,11 +871,16 @@ class AgentTurnApplication:
             except ContextBudgetError as exc:
                 last_error = exc
                 if writer is not None:
-                    writer.append(
+                    compaction_started = writer.append(
                         SessionEventType.CONTEXT_COMPACTION_STARTED,
                         {"attempt": attempt, "reason": "context-budget"},
                         turn_id=self._active_turn_id(writer),
                         timestamp=self._clock.now(),
+                    )
+                    _notify_lifecycle(
+                        on_lifecycle,
+                        SessionEventType.CONTEXT_COMPACTION_STARTED.value,
+                        compaction_started.payload,
                     )
                 micro_history = self._context_compactor.micro_compact_history(working_history)
                 micro_events = self._context_compactor.micro_compact_events(
@@ -848,7 +918,7 @@ class AgentTurnApplication:
                         working_history = micro_history
                     else:
                         if writer is not None:
-                            writer.append(
+                            compaction_completed = writer.append(
                                 SessionEventType.CONTEXT_COMPACTION_COMPLETED,
                                 {
                                     "kind": "micro",
@@ -856,6 +926,11 @@ class AgentTurnApplication:
                                 },
                                 turn_id=self._active_turn_id(writer),
                                 timestamp=self._clock.now(),
+                            )
+                            _notify_lifecycle(
+                                on_lifecycle,
+                                SessionEventType.CONTEXT_COMPACTION_COMPLETED.value,
+                                compaction_completed.payload,
                             )
                         return micro_frame, micro_history, working_summary, working_boundary
 
@@ -872,11 +947,16 @@ class AgentTurnApplication:
                     )
                 except (ContextCompactionError, ValueError) as compaction_error:
                     if writer is not None:
-                        writer.append(
+                        compaction_failed = writer.append(
                             SessionEventType.CONTEXT_COMPACTION_FAILED,
                             {"attempt": attempt, "error": str(compaction_error)[:500]},
                             turn_id=self._active_turn_id(writer),
                             timestamp=self._clock.now(),
+                        )
+                        _notify_lifecycle(
+                            on_lifecycle,
+                            SessionEventType.CONTEXT_COMPACTION_FAILED.value,
+                            compaction_failed.payload,
                         )
                     if attempt == 3:
                         raise ContextCompactionError(
@@ -890,7 +970,7 @@ class AgentTurnApplication:
                 if working_summary is None:
                     raise ContextCompactionError("compactor returned no validated summary")
                 if writer is not None:
-                    writer.append(
+                    compaction_completed = writer.append(
                         SessionEventType.CONTEXT_COMPACTION_COMPLETED,
                         {
                             "kind": "summary",
@@ -900,9 +980,14 @@ class AgentTurnApplication:
                         turn_id=self._active_turn_id(writer),
                         timestamp=self._clock.now(),
                     )
+                    _notify_lifecycle(
+                        on_lifecycle,
+                        SessionEventType.CONTEXT_COMPACTION_COMPLETED.value,
+                        compaction_completed.payload,
+                    )
                 if attempt == 3:
                     if writer is not None:
-                        writer.append(
+                        compaction_failed = writer.append(
                             SessionEventType.CONTEXT_COMPACTION_FAILED,
                             {
                                 "attempt": attempt,
@@ -910,6 +995,11 @@ class AgentTurnApplication:
                             },
                             turn_id=self._active_turn_id(writer),
                             timestamp=self._clock.now(),
+                        )
+                        _notify_lifecycle(
+                            on_lifecycle,
+                            SessionEventType.CONTEXT_COMPACTION_FAILED.value,
+                            compaction_failed.payload,
                         )
                     raise ContextCompactionError(
                         "context remained oversized after three compaction attempts"
@@ -957,6 +1047,7 @@ class AgentTurnApplication:
         turn_id: str,
         causation_id: str | None,
         permission_mode: str,
+        on_lifecycle: LifecycleObserver | None = None,
     ) -> tuple[ToolResult, str | None]:
         try:
             validated = self._tool_registry.validate(call)
@@ -1048,6 +1139,22 @@ class AgentTurnApplication:
             causation_id=causation_id,
             timestamp=decision_at,
         )
+        _notify_lifecycle(
+            on_lifecycle,
+            SessionEventType.TOOL_VALIDATED.value,
+            {
+                "tool_call_id": call.tool_call_id,
+                "name": call.name,
+                "decision": decision.value,
+                "resources": list(normalized_resources),
+                "summary": permission_request.risk.summary,
+                "reason": (
+                    preflight_failure.text
+                    if preflight_failure
+                    else getattr(decision_metadata, "reason", "")
+                ),
+            },
+        )
         if preflight_failure is not None:
             return (
                 preflight_failure,
@@ -1088,6 +1195,15 @@ class AgentTurnApplication:
             },
             turn_id=turn_id,
             causation_id=validated_event.event_id if validated_event else causation_id,
+        )
+        _notify_lifecycle(
+            on_lifecycle,
+            SessionEventType.TOOL_STARTED.value,
+            {
+                "tool_call_id": call.tool_call_id,
+                "name": call.name,
+                "resources": list(normalized_resources),
+            },
         )
         workspace.begin_tool_recovery(
             call.tool_call_id,
@@ -1826,3 +1942,20 @@ def _event_request_id(event: SessionEvent | None) -> str | None:
         return None
     value = event.payload.get("request_id")
     return value if isinstance(value, str) else None
+
+
+def _notify_lifecycle(
+    observer: LifecycleObserver | None,
+    event_type: str,
+    payload: Mapping[str, JSONValue],
+) -> None:
+    """Notify presentation code without making it part of the safety boundary."""
+
+    if observer is None:
+        return
+    try:
+        observer(event_type, payload)
+    except Exception:
+        # A broken terminal, logger, or test observer must not change durable
+        # Agent semantics or turn a successful operation into a failure.
+        return

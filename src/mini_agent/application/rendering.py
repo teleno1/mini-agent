@@ -86,6 +86,12 @@ class BoundedStreamRenderer:
         await self._queue.put(None)
         await self._worker
 
+    async def wait_idle(self) -> None:
+        """Wait until all observed stream events have reached the sink."""
+
+        if self._worker is not None:
+            await self._queue.join()
+
     async def __aenter__(self) -> BoundedStreamRenderer:
         await self.start()
         return self

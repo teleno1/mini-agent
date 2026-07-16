@@ -50,6 +50,11 @@ class PermissionGate(Protocol):
 
 type EventObserver = Callable[[StreamEvent], Awaitable[None] | None]
 
+# A lifecycle observation is deliberately separate from the normalized model
+# stream.  It is presentation-only: durable Session Events remain the source
+# of truth and a broken observer must never affect the Agent Loop.
+type LifecycleObserver = Callable[[str, Mapping[str, JSONValue]], object]
+
 
 class SessionWriter(Protocol):
     """The durable-before-side-effect seam used by the Turn application."""
