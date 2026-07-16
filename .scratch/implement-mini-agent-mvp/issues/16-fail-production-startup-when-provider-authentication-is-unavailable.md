@@ -4,15 +4,21 @@
 
 **Blocked by:** None - can start immediately.
 
-**Status:** ready-for-agent
+**Status:** completed
 
-- [ ] The default interactive command, one-shot task command, and Resume path never select the Fake Provider merely because `MINI_AGENT_API_KEY` is absent.
-- [ ] Missing or unusable Provider authentication is explained without exposing secrets and identifies the environment-only API Key action the user must take.
-- [ ] Authentication/configuration startup failure creates no misleading successful Completion Report and uses the specification's configuration/usage exit code where the process exits.
-- [ ] Help, version, initialization, Session listing, configuration inspection, and doctor diagnostics continue to work without Provider credentials.
-- [ ] Fake Provider smoke and automated journeys use an explicit composition seam and cannot be mistaken for production task execution.
-- [ ] Semantic tests cover interactive, one-shot, Resume, offline diagnostic, and explicit Fake Provider paths without real network calls.
+- [x] The default interactive command, one-shot task command, and Resume path never select the Fake Provider merely because `MINI_AGENT_API_KEY` is absent.
+- [x] Missing or unusable Provider authentication is explained without exposing secrets and identifies the environment-only API Key action the user must take.
+- [x] Authentication/configuration startup failure creates no misleading successful Completion Report and uses the specification's configuration/usage exit code where the process exits.
+- [x] Help, version, initialization, Session listing, configuration inspection, and doctor diagnostics continue to work without Provider credentials.
+- [x] Fake Provider smoke and automated journeys use an explicit composition seam and cannot be mistaken for production task execution.
+- [x] Semantic tests cover interactive, one-shot, Resume, offline diagnostic, and explicit Fake Provider paths without real network calls.
 
 ## Completion evidence
 
-Record concrete test names, commands, and observed exit/output behavior here before marking this ticket completed.
+- `tests/test_ticket16.py::test_production_interactive_missing_auth_fails_before_prompt`, `test_production_one_shot_missing_auth_fails_before_session_or_completion`, and `test_production_resume_missing_auth_does_not_use_fake_provider` pass with no `MINI_AGENT_API_KEY`; production task paths emit no Fake response or `Completed` report and return exit code 2. The Resume test also verifies the diagnostic record retains the existing Session ID.
+- `tests/test_ticket16.py::test_blank_auth_is_actionable_and_secret_free` verifies blank authentication is rejected without the blank value and names `MINI_AGENT_API_KEY`; `src/mini_agent/providers/composition.py::production_provider_factory` refuses absent authentication before constructing the real adapter.
+- The one-shot semantic test verifies no Session is created on startup failure; manual `python -m mini_agent --workspace <temporary-workspace> "Explain Mini Agent"` produced the redacted actionable configuration message and process exit 2.
+- `tests/test_ticket16.py::test_offline_diagnostic_commands_work_without_provider_credentials` verifies help, version, init, sessions, config show, and doctor all succeed without credentials.
+- `src/mini_agent/cli/app.py::create_app` is the explicit Provider composition seam; existing Fake journeys now pass `fake_provider_factory`, and `scripts/smoke_artifacts.py` invokes the installed artifact through that explicit composition.
+- `tests/test_ticket16.py` covers interactive, one-shot, Resume, blank-auth, offline diagnostics, and explicit Fake paths; `.venv\Scripts\python.exe -m pytest -q` => `139 passed, 2 skipped`; no test or smoke path makes a real-model network call.
+- Quality gates passed: `.venv\Scripts\python.exe -m ruff format --check .`, `ruff check .`, `mypy`, `git diff --check`, `scripts\check_artifacts.py`, and `scripts\smoke_artifacts.py` (wheel and sdist installed and explicit Fake smoke passed).

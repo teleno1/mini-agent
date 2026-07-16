@@ -309,7 +309,12 @@ class ConfigurationResolver:
 
         raw_api_key = self.environment.get("MINI_AGENT_API_KEY")
         if raw_api_key is not None and not raw_api_key.strip():
-            raise ConfigurationError("environment MINI_AGENT_API_KEY must not be blank")
+            raise ConfigurationError(
+                "Provider authentication is unavailable: MINI_AGENT_API_KEY must not be blank. "
+                "Set a non-blank API key in the MINI_AGENT_API_KEY environment variable; "
+                "API keys are read only "
+                "from the environment, never from TOML or CLI options."
+            )
         api_key = raw_api_key or None
 
         base_before_session = _build_configuration(values, provenance, api_key)

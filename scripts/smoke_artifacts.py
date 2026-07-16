@@ -48,7 +48,7 @@ def _smoke_artifact(artifact: Path, temporary: Path, version: str) -> None:
     launcher = _launcher_path(environment)
     environment_variables = os.environ.copy()
     environment_variables.pop("PYTHONPATH", None)
-    for key in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
+    for key in ("MINI_AGENT_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
         environment_variables.pop(key, None)
 
     _run(
@@ -58,8 +58,13 @@ def _smoke_artifact(artifact: Path, temporary: Path, version: str) -> None:
     )
     help_output = _run([str(launcher), "--help"], cwd=temporary, env=environment_variables)
     version_output = _run([str(launcher), "--version"], cwd=temporary, env=environment_variables)
+    fake_composition = (
+        "from mini_agent.cli.app import create_app; "
+        "from mini_agent.providers.fake import fake_provider_factory; "
+        "create_app(fake_provider_factory)()"
+    )
     smoke_output = _run(
-        [str(launcher), "Explain Mini Agent"],
+        [str(python), "-c", fake_composition, "Explain Mini Agent"],
         cwd=temporary,
         env=environment_variables,
     )

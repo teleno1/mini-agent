@@ -8,7 +8,7 @@ from typer.testing import CliRunner
 import mini_agent.cli.app as cli_module
 from mini_agent.adapters.session_store import SessionStore
 from mini_agent.application.cancellation import InterruptController
-from mini_agent.cli.app import app
+from mini_agent.cli.app import app, create_app
 from mini_agent.domain.sessions import SessionEventType
 from mini_agent.domain.streams import (
     Failure,
@@ -20,8 +20,10 @@ from mini_agent.domain.streams import (
     ToolCallStarted,
     UsageReported,
 )
+from mini_agent.providers.fake import fake_provider_factory
 
 runner = CliRunner()
+fake_app = create_app(fake_provider_factory)
 
 
 class ScriptedProvider:
@@ -60,12 +62,12 @@ def _tool_response(name: str, call_id: str, arguments: dict[str, object]) -> lis
     ]
 
 
-def _use_provider(monkeypatch, responses: list[list[object]]) -> None:
-    monkeypatch.setattr(
-        cli_module,
-        "ScriptedFakeModelProvider",
-        lambda: ScriptedProvider(responses),
-    )
+def _use_provider(responses: list[list[object]]):
+    def factory(configuration, tool_definitions, id_generator):
+        del configuration, tool_definitions, id_generator
+        return ScriptedProvider(responses)
+
+    return create_app(factory)
 
 
 def _interrupted_session(tmp_path: Path) -> tuple[SessionStore, str]:
@@ -148,7 +150,7 @@ def _interrupted_session(tmp_path: Path) -> tuple[SessionStore, str]:
 def test_production_cli_streams_text_and_reports_completion_without_dashboard(
     tmp_path: Path,
 ) -> None:
-    result = runner.invoke(app, ["--workspace", str(tmp_path), "explain this"])
+    result = runner.invoke(fake_app, ["--workspace", str(tmp_path), "explain this"])
 
     assert result.exit_code == 0
     assert "You: explain this" in result.stdout
@@ -178,26 +180,22 @@ def test_cli_exposes_init_and_config_views_without_credentials(tmp_path: Path) -
     assert '"source": "built-in"' in shown.stdout
 
 
-def test_cli_streams_tool_activity_and_only_prompts_for_a_write(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_cli_streams_tool_activity_and_only_prompts_for_a_write(tmp_path: Path) -> None:
     (tmp_path / "README.md").write_text("hello\n", encoding="utf-8")
-    _use_provider(
-        monkeypatch,
+    read_app = _use_provider(
         [
             _tool_response("read_file", "read-1", {"path": "README.md"}),
             _text_response("The file is readable."),
         ],
     )
 
-    read = runner.invoke(app, ["--workspace", str(tmp_path), "read README"])
+    read = runner.invoke(read_app, ["--workspace", str(tmp_path), "read README"])
 
     assert read.exit_code == 0
     assert "read_file (README.md) - completed" in read.stdout
     assert "Permission needed" not in read.stdout
 
-    _use_provider(
-        monkeypatch,
+    denied_app = _use_provider(
         [
             _tool_response(
                 "create_file",
@@ -208,7 +206,7 @@ def test_cli_streams_tool_activity_and_only_prompts_for_a_write(
         ],
     )
     denied = runner.invoke(
-        app,
+        denied_app,
         ["--workspace", str(tmp_path), "create a file"],
         input="deny\n",
     )
@@ -223,13 +221,10 @@ def test_cli_streams_tool_activity_and_only_prompts_for_a_write(
     assert not (tmp_path / "new.txt").exists()
 
 
-def test_cli_renders_complex_plan_and_compaction_as_semantic_lines(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_cli_renders_complex_plan_and_compaction_as_semantic_lines(tmp_path: Path) -> None:
     (tmp_path / "one.txt").write_text("one\n", encoding="utf-8")
     (tmp_path / "two.txt").write_text("two\n", encoding="utf-8")
-    _use_provider(
-        monkeypatch,
+    planned_app = _use_provider(
         [
             [
                 ResponseStarted(request_id="response-plan"),
@@ -244,7 +239,7 @@ def test_cli_renders_complex_plan_and_compaction_as_semantic_lines(
         ],
     )
 
-    planned = runner.invoke(app, ["--workspace", str(tmp_path), "inspect both files"])
+    planned = runner.invoke(planned_app, ["--workspace", str(tmp_path), "inspect both files"])
 
     assert planned.exit_code == 0
     assert "Plan:" in planned.stdout
@@ -259,7 +254,7 @@ def test_cli_renders_complex_plan_and_compaction_as_semantic_lines(
         "context_window_tokens = 100\nresponse_reserve_tokens = 1\n",
         encoding="utf-8",
     )
-    compacted = runner.invoke(app, ["--workspace", str(compact), "compact this"])
+    compacted = runner.invoke(fake_app, ["--workspace", str(compact), "compact this"])
 
     assert compacted.exit_code == 1
     assert "Context pressure detected" in compacted.stdout
@@ -268,9 +263,7 @@ def test_cli_renders_complex_plan_and_compaction_as_semantic_lines(
     assert "Turn failed" in compacted.stdout
 
 
-def test_cli_reports_redacted_provider_error_and_keeps_session_listable(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_cli_reports_redacted_provider_error_and_keeps_session_listable(tmp_path: Path) -> None:
     failure = Failure(
         category="network",
         code="offline",
@@ -279,9 +272,9 @@ def test_cli_reports_redacted_provider_error_and_keeps_session_listable(
         retryable=False,
         required_user_action="retry later",
     )
-    _use_provider(monkeypatch, [[ResponseStarted(request_id="r"), ResponseFailed(failure)]])
+    provider_app = _use_provider([[ResponseStarted(request_id="r"), ResponseFailed(failure)]])
 
-    result = runner.invoke(app, ["--workspace", str(tmp_path), "network task"])
+    result = runner.invoke(provider_app, ["--workspace", str(tmp_path), "network task"])
 
     assert result.exit_code == 1
     assert "[stream incomplete]" in result.stdout
@@ -292,7 +285,7 @@ def test_cli_reports_redacted_provider_error_and_keeps_session_listable(
     assert "network task" in listed.stdout
 
 
-def test_cli_shows_provider_retry_progress(monkeypatch, tmp_path: Path) -> None:
+def test_cli_shows_provider_retry_progress(tmp_path: Path) -> None:
     retryable = Failure(
         category="network",
         code="temporary",
@@ -301,15 +294,14 @@ def test_cli_shows_provider_retry_progress(monkeypatch, tmp_path: Path) -> None:
         retryable=True,
         required_user_action="retry the request",
     )
-    _use_provider(
-        monkeypatch,
+    provider_app = _use_provider(
         [
             [ResponseStarted(request_id="r1"), ResponseFailed(retryable)],
             _text_response("Recovered."),
         ],
     )
 
-    result = runner.invoke(app, ["--workspace", str(tmp_path), "retry task"])
+    result = runner.invoke(provider_app, ["--workspace", str(tmp_path), "retry task"])
 
     assert result.exit_code == 0
     assert "Provider retry 2/3" in result.stdout
@@ -326,7 +318,7 @@ def test_cli_acknowledges_cancellation_without_reporting_completion(
 
     monkeypatch.setattr(cli_module, "InterruptController", CancelImmediately)
 
-    result = runner.invoke(app, ["--workspace", str(tmp_path), "cancel this"])
+    result = runner.invoke(fake_app, ["--workspace", str(tmp_path), "cancel this"])
 
     assert result.exit_code == 1
     assert "Cancelling" in result.stdout
@@ -338,7 +330,7 @@ def test_cli_resume_exposes_inspect_exit_and_abandon_choices(tmp_path: Path) -> 
     _store, session_id = _interrupted_session(tmp_path)
 
     inspected = runner.invoke(
-        app,
+        fake_app,
         ["resume", session_id, "--workspace", str(tmp_path)],
         input="inspect\nexit\n",
     )
@@ -350,7 +342,7 @@ def test_cli_resume_exposes_inspect_exit_and_abandon_choices(tmp_path: Path) -> 
 
     _store, session_id = _interrupted_session(tmp_path / "abandon")
     abandoned = runner.invoke(
-        app,
+        fake_app,
         ["resume", session_id, "--workspace", str(tmp_path / "abandon")],
         input="abandon\n",
     )

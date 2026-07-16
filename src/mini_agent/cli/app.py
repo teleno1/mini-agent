@@ -26,7 +26,7 @@ from mini_agent.adapters.session_store import (
 from mini_agent.application.agent import AgentTurnApplication, AgentTurnResult
 from mini_agent.application.cancellation import ForcedInterrupt, InterruptController
 from mini_agent.application.permissions import PermissionPolicyGate
-from mini_agent.application.ports import LifecycleObserver
+from mini_agent.application.ports import IDGenerator, LifecycleObserver, ModelProvider
 from mini_agent.cli.presentation import ConversationPresenter, TerminalPermissionInteraction
 from mini_agent.configuration import (
     ConfigurationError,
@@ -36,11 +36,11 @@ from mini_agent.configuration import (
     SessionConfigurationService,
     SessionOverrideConfirmationRequired,
     initialize_project,
+    redact_secrets,
 )
 from mini_agent.context import ContextBuilder
 from mini_agent.diagnostics import DiagnosticLogger
-from mini_agent.providers.fake import ScriptedFakeModelProvider
-from mini_agent.providers.openai_compatible import OpenAICompatibleModelProvider
+from mini_agent.providers.composition import ProviderFactory, production_provider_factory
 from mini_agent.tools import (
     ApplyPatchTool,
     ArtifactReadTool,
@@ -66,17 +66,6 @@ class _DefaultTaskGroup(typer_core.TyperGroup):
                 if command is not None:
                     return "run", command, args
             raise
-
-
-app = typer.Typer(
-    cls=_DefaultTaskGroup,
-    add_completion=False,
-    no_args_is_help=False,
-    context_settings={"allow_extra_args": True},
-    help="An independent, educational terminal coding agent.",
-)
-config_app = typer.Typer(add_completion=False, help="Inspect effective configuration.")
-app.add_typer(config_app, name="config")
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,11 +108,72 @@ def _cli_values_from_context(context: typer.Context) -> dict[str, object]:
     return dict(cast(dict[str, object], raw))
 
 
+def _provider_factory_from_context(context: typer.Context) -> ProviderFactory:
+    context.ensure_object(dict)
+    factory = context.find_root().obj.get("provider_factory")
+    if not callable(factory):
+        return production_provider_factory
+    return cast(ProviderFactory, factory)
+
+
 def _is_terminal_input() -> bool:
     try:
         return bool(sys.stdin.isatty())
     except (AttributeError, OSError):
         return False
+
+
+def _report_configuration_failure(
+    workspace: Path,
+    exc: ConfigurationError,
+    *,
+    session_id: str | None = None,
+    id_generator: IDGenerator | None = None,
+) -> None:
+    diagnostics = DiagnosticLogger(
+        workspace,
+        id_generator=id_generator or UUIDIdGenerator(),
+    )
+    failure = diagnostics.record_exception(exc, session_id=session_id)
+    message = redact_secrets(exc)
+    typer.echo(
+        f"Configuration failed [{failure.error_id or 'unavailable'}]: {message}",
+        err=True,
+    )
+
+
+def _startup_provider_check(
+    workspace: Path,
+    store: SessionStore,
+    *,
+    cli_values: dict[str, object],
+    provider_factory: ProviderFactory,
+    session_id: str | None = None,
+) -> bool:
+    """Validate the Provider composition before entering an interactive Session."""
+
+    provider: ModelProvider | None = None
+    try:
+        _application, provider, _resolver, _configuration, _diagnostics = _build_application(
+            workspace,
+            store,
+            cli_values=cli_values,
+            session_id=None,
+            interaction=TerminalPermissionInteraction(ConversationPresenter(interactive=True)),
+            permission_gate=PermissionPolicyGate(),
+            provider_factory=provider_factory,
+        )
+        return True
+    except ConfigurationError as exc:
+        _report_configuration_failure(
+            workspace,
+            exc,
+            session_id=session_id,
+        )
+        return False
+    finally:
+        if provider is not None:
+            asyncio.run(_close_provider(provider))
 
 
 def _tool_registry(store: SessionStore) -> ToolRegistry:
@@ -163,9 +213,10 @@ def _build_application(
     session_id: str | None,
     interaction: TerminalPermissionInteraction,
     permission_gate: PermissionPolicyGate,
+    provider_factory: ProviderFactory = production_provider_factory,
 ) -> tuple[
     AgentTurnApplication,
-    OpenAICompatibleModelProvider | ScriptedFakeModelProvider,
+    ModelProvider,
     ConfigurationResolver,
     EffectiveConfiguration,
     DiagnosticLogger,
@@ -179,18 +230,7 @@ def _build_application(
     ids = UUIDIdGenerator()
     diagnostics = DiagnosticLogger(workspace, id_generator=ids)
     registry = _tool_registry(store)
-    if configuration.api_key:
-        provider: OpenAICompatibleModelProvider | ScriptedFakeModelProvider = (
-            OpenAICompatibleModelProvider.from_configuration(
-                configuration,
-                tool_definitions=registry.definitions(),
-                id_generator=ids,
-            )
-        )
-    else:
-        # The offline journey deliberately uses the same Agent Loop and Tool
-        # Registry; it only substitutes the deterministic Model Provider.
-        provider = ScriptedFakeModelProvider()
+    provider = provider_factory(configuration, registry.definitions(), ids)
     application = AgentTurnApplication(
         provider=provider,
         workspace=Workspace(workspace),
@@ -209,7 +249,7 @@ def _build_application(
 
 
 async def _close_provider(
-    provider: OpenAICompatibleModelProvider | ScriptedFakeModelProvider,
+    provider: ModelProvider,
 ) -> None:
     close = getattr(provider, "aclose", None)
     if callable(close):
@@ -229,6 +269,7 @@ async def _run_turn(
     permission_gate: PermissionPolicyGate | None = None,
     interactive: bool = False,
     user_already_rendered: bool = False,
+    provider_factory: ProviderFactory = production_provider_factory,
 ) -> TurnRunOutcome:
     """Run one bounded Turn and return failures to the caller's conversation."""
 
@@ -240,36 +281,11 @@ async def _run_turn(
     gate.interaction = interaction
     selected_session = session_id
     diagnostics: DiagnosticLogger | None = None
-    provider: OpenAICompatibleModelProvider | ScriptedFakeModelProvider | None = None
+    provider: ModelProvider | None = None
     cancellation_wait: asyncio.Task[bool] | None = None
     turn_task: asyncio.Task[AgentTurnResult] | None = None
 
     try:
-        try:
-            # Resolve before creating a Session so a configuration error cannot
-            # create an apparently runnable empty Session.
-            resolver, configuration = _resolve_configuration(
-                workspace,
-                cli_values=values,
-                store=store,
-                session_id=selected_session,
-            )
-            del resolver, configuration
-        except ConfigurationError as exc:
-            diagnostics = DiagnosticLogger(workspace, id_generator=ids)
-            failure = diagnostics.record_exception(exc)
-            typer.echo(
-                f"Configuration failed [{failure.error_id or 'unavailable'}]: "
-                "correct the configuration source and retry.",
-                err=True,
-            )
-            return TurnRunOutcome(selected_session, configuration_error=True)
-
-        if selected_session is None:
-            selected_session = ids.new_id("session")
-            with store.create(selected_session):
-                pass
-
         try:
             application, provider, _resolver, _configuration, diagnostics = _build_application(
                 workspace,
@@ -278,16 +294,21 @@ async def _run_turn(
                 session_id=selected_session,
                 interaction=interaction,
                 permission_gate=gate,
+                provider_factory=provider_factory,
             )
         except ConfigurationError as exc:
-            diagnostics = diagnostics or DiagnosticLogger(workspace, id_generator=ids)
-            failure = diagnostics.record_exception(exc, session_id=selected_session)
-            typer.echo(
-                f"Configuration failed [{failure.error_id or 'unavailable'}]: "
-                "correct the configuration source and retry.",
-                err=True,
+            _report_configuration_failure(
+                workspace,
+                exc,
+                session_id=selected_session,
+                id_generator=ids,
             )
             return TurnRunOutcome(selected_session, configuration_error=True)
+
+        if selected_session is None:
+            selected_session = ids.new_id("session")
+            with store.create(selected_session):
+                pass
 
         if not user_already_rendered:
             presenter.user(task)
@@ -436,11 +457,12 @@ async def _retry_interrupted_cli(
     *,
     cli_values: dict[str, object],
     gate: PermissionPolicyGate,
+    provider_factory: ProviderFactory = production_provider_factory,
 ) -> bool:
     presenter = ConversationPresenter(interactive=_is_terminal_input())
     interaction = TerminalPermissionInteraction(presenter)
     gate.interaction = interaction
-    provider: OpenAICompatibleModelProvider | ScriptedFakeModelProvider | None = None
+    provider: ModelProvider | None = None
     try:
         application, provider, _resolver, _configuration, diagnostics = _build_application(
             workspace,
@@ -449,6 +471,7 @@ async def _retry_interrupted_cli(
             session_id=session_id,
             interaction=interaction,
             permission_gate=gate,
+            provider_factory=provider_factory,
         )
         result = await application.retry_interrupted(session_id)
         presenter.recovery(
@@ -579,6 +602,7 @@ def _interactive_loop(
     store: SessionStore,
     *,
     cli_values: dict[str, object],
+    provider_factory: ProviderFactory,
 ) -> None:
     session_id: str | None = None
     gate = PermissionPolicyGate()
@@ -614,6 +638,7 @@ def _interactive_loop(
                 permission_gate=gate,
                 interactive=True,
                 user_already_rendered=True,
+                provider_factory=provider_factory,
             )
         )
         if outcome.session_id is not None:
@@ -622,7 +647,6 @@ def _interactive_loop(
             raise typer.Exit(code=ForcedInterrupt.exit_code)
 
 
-@app.command("init")
 def initialize(
     context: typer.Context,
     yes: Annotated[
@@ -656,7 +680,6 @@ def initialize(
         typer.echo(f"Updated {ignore_path}")
 
 
-@config_app.command("show")
 def show_config(
     context: typer.Context,
     workspace: Annotated[
@@ -674,7 +697,6 @@ def show_config(
         raise typer.Exit(code=2) from exc
 
 
-@app.command("sessions")
 def list_sessions(
     context: typer.Context,
     workspace: Annotated[
@@ -687,7 +709,6 @@ def list_sessions(
     _display_sessions(_workspace_from_context(context, workspace))
 
 
-@app.command("doctor")
 def doctor(
     context: typer.Context,
     error_id: Annotated[str, typer.Argument(help="The diagnostic error ID to resolve.")],
@@ -706,7 +727,6 @@ def doctor(
     typer.echo(json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True))
 
 
-@app.command("resume")
 def resume_session(
     context: typer.Context,
     session_id: Annotated[str, typer.Argument(help="The Session ID to resume.")],
@@ -721,6 +741,15 @@ def resume_session(
     root = _workspace_from_context(context, workspace)
     store = SessionStore(root)
     values = _cli_values_from_context(context)
+    provider_factory = _provider_factory_from_context(context)
+    if not _startup_provider_check(
+        root,
+        store,
+        cli_values=values,
+        provider_factory=provider_factory,
+        session_id=session_id,
+    ):
+        raise typer.Exit(code=2)
     gate = PermissionPolicyGate()
     try:
         inspection = store.inspect_resume(session_id)
@@ -750,6 +779,7 @@ def resume_session(
                             session_id,
                             cli_values=values,
                             gate=gate,
+                            provider_factory=provider_factory,
                         )
                     ):
                         raise typer.Exit(code=1)
@@ -774,6 +804,7 @@ def resume_session(
                 permission_gate=gate,
                 interactive=_is_terminal_input(),
                 user_already_rendered=prompted_task,
+                provider_factory=provider_factory,
             )
         )
         _raise_for_outcome(turn_outcome)
@@ -782,11 +813,11 @@ def resume_session(
         raise typer.Exit(code=1) from exc
 
 
-@app.command("run", hidden=True)
 def run_task(context: typer.Context, task: Annotated[list[str], typer.Argument()]) -> None:
     """Run one default conversational task."""
 
     root = _workspace_from_context(context)
+    provider_factory = _provider_factory_from_context(context)
     outcome = asyncio.run(
         _run_turn(
             " ".join(task),
@@ -794,13 +825,13 @@ def run_task(context: typer.Context, task: Annotated[list[str], typer.Argument()
             SessionStore(root),
             cli_values=_cli_values_from_context(context),
             interactive=False,
+            provider_factory=provider_factory,
         )
     )
     _raise_for_outcome(outcome)
 
 
-@app.callback(invoke_without_command=True)
-def _callback(
+def _callback_impl(
     context: typer.Context,
     workspace: Annotated[
         Path | None,
@@ -824,9 +855,12 @@ def _callback(
             help="Show the installed Mini Agent version.",
         ),
     ] = None,
+    *,
+    provider_factory: ProviderFactory,
 ) -> None:
     del version
     context.ensure_object(dict)
+    context.obj["provider_factory"] = provider_factory
     root = (workspace or Path.cwd()).expanduser().resolve()
     context.obj["workspace"] = root
     context.obj["cli_values"] = {
@@ -849,11 +883,91 @@ def _callback(
                 SessionStore(root),
                 cli_values=_cli_values_from_context(context),
                 interactive=False,
+                provider_factory=provider_factory,
             )
         )
         _raise_for_outcome(outcome)
         return
-    _interactive_loop(root, SessionStore(root), cli_values=_cli_values_from_context(context))
+    if not _startup_provider_check(
+        root,
+        SessionStore(root),
+        cli_values=_cli_values_from_context(context),
+        provider_factory=provider_factory,
+    ):
+        raise typer.Exit(code=2)
+    _interactive_loop(
+        root,
+        SessionStore(root),
+        cli_values=_cli_values_from_context(context),
+        provider_factory=provider_factory,
+    )
+
+
+def create_app(provider_factory: ProviderFactory = production_provider_factory) -> typer.Typer:
+    """Compose a CLI with an explicit Provider factory.
+
+    The default composition is production-only. Tests and offline artifact
+    smoke runs must pass their Fake Provider factory explicitly.
+    """
+
+    command_app = typer.Typer(
+        cls=_DefaultTaskGroup,
+        add_completion=False,
+        no_args_is_help=False,
+        context_settings={"allow_extra_args": True},
+        help="An independent, educational terminal coding agent.",
+    )
+    command_config_app = typer.Typer(add_completion=False, help="Inspect effective configuration.")
+    command_app.add_typer(command_config_app, name="config")
+    command_app.command("init")(initialize)
+    command_config_app.command("show")(show_config)
+    command_app.command("sessions")(list_sessions)
+    command_app.command("doctor")(doctor)
+    command_app.command("resume")(resume_session)
+    command_app.command("run", hidden=True)(run_task)
+
+    def callback(
+        context: typer.Context,
+        workspace: Annotated[
+            Path | None,
+            typer.Option("--workspace", help="Workspace root for the Session and instructions."),
+        ] = None,
+        model: Annotated[
+            str | None, typer.Option("--model", help="Provider model override.")
+        ] = None,
+        base_url: Annotated[
+            str | None,
+            typer.Option("--base-url", help="OpenAI-compatible Provider Base URL override."),
+        ] = None,
+        permission_mode: Annotated[
+            str | None,
+            typer.Option("--permission-mode", help="Permission mode override."),
+        ] = None,
+        version: Annotated[
+            bool | None,
+            typer.Option(
+                "--version",
+                callback=_version_callback,
+                is_eager=True,
+                help="Show the installed Mini Agent version.",
+            ),
+        ] = None,
+    ) -> None:
+        _callback_impl(
+            context,
+            workspace,
+            model,
+            base_url,
+            permission_mode,
+            version,
+            provider_factory=provider_factory,
+        )
+
+    command_app.callback(invoke_without_command=True)(callback)
+    return command_app
+
+
+app = create_app()
 
 
 def main() -> None:

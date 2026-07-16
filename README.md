@@ -1,12 +1,17 @@
 # Mini Agent
 
 Mini Agent is a small, inspectable terminal coding agent for learning how an
-agent loop is put together. Without an API key it uses a deterministic Fake
-Model Provider, so the CLI can be tried offline:
+agent loop is put together. Production task execution requires a Provider API
+key from the `MINI_AGENT_API_KEY` environment variable:
 
 ```console
+set MINI_AGENT_API_KEY=your-provider-key
 mini-agent "Explain Mini Agent"
 ```
+
+The deterministic Fake Model Provider is composed explicitly by automated
+tests and the artifact smoke journey; it is never selected by the production
+CLI when authentication is absent.
 
 Run without a task to enter an interactive Session. Each turn is stored as
 UTF-8 JSONL under `.mini-agent/sessions`. List and continue Sessions with:
@@ -58,6 +63,6 @@ The build produces one pure-Python wheel, one source distribution, and a
 package metadata and can be installed without a source checkout.
 
 The runtime dependencies are intentionally limited to Typer, Rich, Pydantic,
-and httpx. No API key or Git repository is needed for the offline Fake
-Provider journey. Session history is authoritative in `events.jsonl`; listing
-metadata is rebuilt from that history.
+and httpx. Help, version, initialization, Session listing, configuration
+inspection, and doctor diagnostics work without an API key. Session history is
+authoritative in `events.jsonl`; listing metadata is rebuilt from that history.

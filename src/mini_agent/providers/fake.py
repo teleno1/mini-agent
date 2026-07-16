@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Sequence
 
+from mini_agent.application.ports import IDGenerator, ModelProvider
+from mini_agent.configuration import EffectiveConfiguration
 from mini_agent.context import ContextFrame
 from mini_agent.domain.messages import Message
 from mini_agent.domain.streams import (
@@ -14,6 +16,7 @@ from mini_agent.domain.streams import (
     TextDelta,
     UsageReported,
 )
+from mini_agent.tools.contracts import ToolDefinition
 
 DEFAULT_CHUNKS = (
     "Mini Agent is a small, ",
@@ -60,3 +63,17 @@ class ScriptedFakeModelProvider:
             yield TextDelta(text=chunk)
         yield self._usage
         yield ResponseCompleted()
+
+
+def fake_provider_factory(
+    configuration: EffectiveConfiguration,
+    tool_definitions: Sequence[ToolDefinition],
+    id_generator: IDGenerator,
+) -> ModelProvider:
+    """Compose the deterministic Provider explicitly for tests and smoke runs."""
+
+    del configuration, tool_definitions, id_generator
+    return ScriptedFakeModelProvider()
+
+
+__all__ = ["ScriptedFakeModelProvider", "fake_provider_factory"]
