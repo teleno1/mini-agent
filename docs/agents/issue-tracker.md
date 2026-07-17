@@ -16,6 +16,11 @@ Issues and PRDs for this repo live as GitHub issues. Use the `gh` CLI for all op
 GitHub Issues are the only implementation-ticket tracker. Do not infer a GitHub
 Issue from a local filename or use `.scratch/` files as ticket state.
 
+A specification, map, or other parent Issue with unfinished sub-issues is not
+an implementation ticket. It must not carry the `ready-for-agent` label after
+its implementation tickets have been published, and agents must skip it when
+selecting the next ticket automatically.
+
 When an Agent is given a GitHub Issue URL or number, that Issue is the selected
 ticket and the user has authorized the state changes for that Issue only:
 

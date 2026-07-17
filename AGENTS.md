@@ -23,7 +23,7 @@ When a ticket and the specification appear inconsistent, stop and surface the co
 ## GitHub implementation workflow
 
 - When the user names a GitHub Issue URL or number, that Issue is the selected implementation ticket. Naming it authorizes the ticket's assignment, evidence comment, and closure; it does not authorize changes to other remote Issues.
-- If the user does not name a ticket, select the lowest-numbered open `ready-for-agent` GitHub Issue whose native blockers are all closed.
+- If the user does not name a ticket, select the lowest-numbered open `ready-for-agent` leaf GitHub Issue whose native blockers are all closed. A specification, map, or other parent Issue with unfinished sub-issues is not an implementation ticket and must be skipped.
 - Work on one ticket at a time unless the user explicitly authorizes more.
 - Before editing, read the complete GitHub Issue and comments, its relevant specification sections, the repository-root `CONTEXT.md`, and completed blocker Issues. Do not expect a ticket-local `CONTEXT.md` unless the selected Issue explicitly links one.
 - Before editing, verify the blockers are closed and assign the selected GitHub Issue to the current GitHub user. This assignment is the claim.
