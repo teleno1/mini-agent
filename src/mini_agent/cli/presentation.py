@@ -304,22 +304,24 @@ class TerminalPermissionInteraction(UserInteraction):
         if not self.is_interactive:
             return ConfirmationChoice.DENY
         self.presenter.permission_block(preview)
-        prompt = "  Choose [allow-once/allow-exact-for-session/deny/cancel]"
+        prompt = "  Choose [1 allow once / 2 allow exact for Session / 3 deny / 4 cancel]"
+        choices = {
+            "1": ConfirmationChoice.ALLOW_ONCE,
+            "2": ConfirmationChoice.ALLOW_FOR_SESSION,
+            "3": ConfirmationChoice.DENY,
+            "4": ConfirmationChoice.CANCEL,
+        }
         while True:
             try:
-                value = typer.prompt(prompt, default="deny", show_default=False)
+                value = typer.prompt(prompt, show_default=False)
             except (Abort, EOFError, OSError):
                 self.presenter.external_line_finished()
                 return ConfirmationChoice.DENY
             self.presenter.external_line_finished()
-            normalized = value.strip().casefold().replace("_", "-").replace(" ", "-")
-            try:
-                return ConfirmationChoice(normalized)
-            except ValueError:
-                pass
-            self.presenter.recovery(
-                "  Invalid choice; use allow-once, allow-exact-for-session, deny, or cancel."
-            )
+            choice = choices.get(value.strip())
+            if choice is not None:
+                return choice
+            self.presenter.recovery("  Invalid choice; enter 1, 2, 3, or 4.")
 
 
 def _string(value: object) -> str:

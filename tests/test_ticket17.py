@@ -147,13 +147,13 @@ def test_interactive_session_grant_requires_an_exact_argument_hash() -> None:
 @pytest.mark.parametrize(
     ("choice", "decision"),
     [
-        ("allow-once", PermissionDecision.ALLOW),
-        ("allow-exact-for-session", PermissionDecision.ALLOW),
-        ("deny", PermissionDecision.DENY),
-        ("cancel", PermissionDecision.CANCEL),
+        ("1", PermissionDecision.ALLOW),
+        ("2", PermissionDecision.ALLOW),
+        ("3", PermissionDecision.DENY),
+        ("4", PermissionDecision.CANCEL),
     ],
 )
-def test_interactive_confirmation_accepts_the_four_focused_choices(
+def test_interactive_confirmation_accepts_the_four_numeric_choices(
     monkeypatch,
     choice: str,
     decision: PermissionDecision,
@@ -170,8 +170,8 @@ def test_interactive_confirmation_accepts_the_four_focused_choices(
     assert gate.decide(_permission_request()) is decision
 
 
-def test_interactive_confirmation_rejects_unlisted_affirmative_alias(monkeypatch) -> None:
-    answers = iter(["allow", "allow-once"])
+def test_interactive_confirmation_rejects_words_and_aliases(monkeypatch) -> None:
+    answers = iter(["allow", "allow-once", "1"])
     presenter = ConversationPresenter(output=lambda _text: None, interactive=True)
     interaction = TerminalPermissionInteraction(presenter, interactive=True)
     monkeypatch.setattr(
@@ -184,7 +184,29 @@ def test_interactive_confirmation_rejects_unlisted_affirmative_alias(monkeypatch
     assert gate.decide(_permission_request()) is PermissionDecision.ALLOW
 
 
-@pytest.mark.parametrize("piped_value", ["", "allow\n", "session\n"])
+def test_numeric_session_choice_preserves_exact_argument_hash_grant(monkeypatch) -> None:
+    answers = iter(["2", "3"])
+    presenter = ConversationPresenter(output=lambda _text: None, interactive=True)
+    interaction = TerminalPermissionInteraction(presenter, interactive=True)
+    monkeypatch.setattr(
+        "mini_agent.cli.presentation.typer.prompt",
+        lambda *_args, **_kwargs: next(answers),
+    )
+    request = _permission_request()
+    changed_call = ToolCall(
+        tool_call_id="call-changed",
+        name="create_file",
+        arguments={"path": "new.txt", "content": "changed"},
+    )
+    changed = PermissionRequest(NormalizedToolCall.from_call(changed_call), request.risk)
+    gate = PermissionPolicyGate(PermissionMode.SUGGEST, interaction=interaction)
+
+    assert gate.decide(request) is PermissionDecision.ALLOW
+    assert gate.decide(changed) is PermissionDecision.DENY
+    assert len(gate.session_grants) == 1
+
+
+@pytest.mark.parametrize("piped_value", ["", "1\n", "allow\n", "session\n"])
 def test_noninteractive_one_shot_eof_or_piped_affirmative_denies_without_prompt(
     tmp_path: Path,
     piped_value: str,
@@ -297,22 +319,39 @@ def test_interactive_terminal_retains_allow_once_and_denies_focus_choices(
     allow = runner.invoke(
         _fake_app("create_file", {"path": "allowed.txt", "content": "created"}),
         ["--workspace", str(tmp_path)],
-        input="create a file\nallow-once\n/exit\n",
+        input="create a file\n1\n/exit\n",
     )
 
     assert allow.exit_code == 0
     assert "Permission needed" in allow.stdout
-    assert "Choose [allow-once/allow-exact-for-session/deny/cancel]" in allow.stdout
+    assert "Choose [1 allow once / 2 allow exact for Session / 3 deny / 4 cancel]" in allow.stdout
     assert "create_file (allowed.txt) - completed" in allow.stdout
     assert (tmp_path / "allowed.txt").read_text(encoding="utf-8") == "created"
 
     denied = runner.invoke(
         _fake_app("create_file", {"path": "denied.txt", "content": "created"}),
         ["--workspace", str(tmp_path)],
-        input="create another file\ndeny\n/exit\n",
+        input="create another file\n3\n/exit\n",
     )
 
     assert denied.exit_code == 0
     assert "Permission needed" in denied.stdout
     assert "create_file (denied.txt) - denied" in denied.stdout
     assert not (tmp_path / "denied.txt").exists()
+
+
+def test_interactive_terminal_reprompts_for_invalid_input_without_authorizing_it(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(cli_module, "_is_terminal_input", lambda: True)
+    result = runner.invoke(
+        _fake_app("create_file", {"path": "retried.txt", "content": "created"}),
+        ["--workspace", str(tmp_path)],
+        input="create a file\nallow\n12\n1\n/exit\n",
+    )
+
+    assert result.exit_code == 0
+    assert result.stdout.count("Invalid choice; enter 1, 2, 3, or 4.") == 2
+    assert "create_file (retried.txt) - completed" in result.stdout
+    assert (tmp_path / "retried.txt").read_text(encoding="utf-8") == "created"
