@@ -36,9 +36,7 @@ def test_presenter_uses_grouped_rail_and_trailing_plain_status() -> None:
         "tool.completed",
         {"tool_call_id": "call-1", "name": "read_file", "outcome": "success"},
     )
-    presenter.on_lifecycle(
-        "model.request.completed", {"input_tokens": 40, "output_tokens": 5}
-    )
+    presenter.on_lifecycle("model.request.completed", {"input_tokens": 40, "output_tokens": 5})
     asyncio.run(_render_response(presenter))
 
     rendered = "".join(output)

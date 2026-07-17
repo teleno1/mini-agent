@@ -103,9 +103,7 @@ def test_plan_mode_is_runtime_only_and_session_persistence_uses_existing_event(
     tmp_path: Path,
 ) -> None:
     assert (
-        _resolver(tmp_path, environment={"MINI_AGENT_PLAN_MODE": "true"})
-        .resolve()
-        .plan_mode
+        _resolver(tmp_path, environment={"MINI_AGENT_PLAN_MODE": "true"}).resolve().plan_mode
         is False
     )
 

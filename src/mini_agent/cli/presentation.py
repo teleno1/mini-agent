@@ -189,9 +189,7 @@ class ConversationPresenter:
         self._emit(f"|     Operation: {preview.operation}")
         self._emit(f"|     Resources: {', '.join(preview.resources) or '(none)'}")
         self._emit(f"|     Reason: {preview.reason}")
-        self._emit(
-            "|     Choose [1 allow once / 2 allow exact for Session / 3 deny / 4 cancel]"
-        )
+        self._emit("|     Choose [1 allow once / 2 allow exact for Session / 3 deny / 4 cancel]")
 
     def completion(self, report: CompletionReport) -> None:
         self._line()

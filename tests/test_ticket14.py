@@ -166,9 +166,7 @@ def test_production_cli_streams_text_and_reports_completion_without_dashboard(
     assert "context_window_tokens" not in result.stdout
 
 
-def test_cli_exposes_init_and_config_views_without_credentials(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_cli_exposes_init_and_config_views_without_credentials(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.delenv("MINI_AGENT_API_KEY", raising=False)
     initialized = runner.invoke(app, ["init", "--yes", "--workspace", str(tmp_path)])
 

@@ -304,7 +304,6 @@ def test_context_frame_authority_order_manifest_and_budget(tmp_path: Path) -> No
         plan={"steps": ["verify"]},
         recovery={"status": "none"},
         tool_definitions=[{"name": "read_file"}],
-        selected_events=[{"type": "tool.result", "tool_call_id": "call-1"}],
         summary_boundary=7,
         included_event_range=(8, 11),
     )
@@ -323,7 +322,7 @@ def test_context_frame_authority_order_manifest_and_budget(tmp_path: Path) -> No
     )
     assert frame.layers[0].role == "system"
     assert frame.layers[3].role == "developer"
-    assert frame.layers[4].role == "user"
+    assert frame.layers[4].role == "developer"
     assert frame.layers[-1].role == "user"
     history_messages = [
         message for message in frame.messages if message.layer is ContextLayerName.HISTORY

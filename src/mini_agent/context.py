@@ -274,12 +274,11 @@ class ContextBuilder:
         request_id: str = "request-unknown",
         session_id: str | None = None,
         targets: Iterable[str] = (),
-        history: Sequence[Message | ContextMessage] = (),
+        history: Sequence[Message] = (),
         summary: str | Mapping[str, object] | None = None,
         plan: str | Mapping[str, object] | None = None,
         recovery: str | Mapping[str, object] | None = None,
         tool_definitions: Sequence[Mapping[str, object] | str] = (),
-        selected_events: Sequence[Mapping[str, object] | str] = (),
         message_sources: Sequence[Mapping[str, object] | ContextMessageSource] = (),
         summary_boundary: int = 0,
         included_event_range: tuple[int, int] | None = None,
@@ -340,14 +339,14 @@ class ContextBuilder:
             layers.append(
                 ContextLayer.create(
                     ContextLayerName.SESSION_STATE,
-                    "user",
+                    "developer",
                     ContextAuthority.SESSION_STATE,
                     state,
                     "durable Session projection",
                 )
             )
         eligible_history = _eligible_history(history)
-        history_content = _render_history(eligible_history, selected_events)
+        history_content = _render_history(eligible_history)
         if history_content:
             layers.append(
                 ContextLayer.create(
@@ -443,40 +442,31 @@ def _render_state(
     return "\n\n".join(sections)
 
 
-def _render_history(
-    history: Sequence[Message | ContextMessage],
-    selected_events: Sequence[Mapping[str, object] | str],
-) -> str:
-    del selected_events
+def _render_history(history: Sequence[Message]) -> str:
     sections: list[str] = []
     for message in history:
-        if isinstance(message, ContextMessage):
-            sections.append(f"{message.role}: {message.content}")
-        else:
-            sections.append(f"{message.role}: {_message_content(message)}")
+        sections.append(f"{message.role}: {_message_content(message)}")
     return "\n".join(sections)
 
 
-def _eligible_history(history: Sequence[Message | ContextMessage]) -> tuple[Message, ...]:
+def _eligible_history(history: Sequence[Message]) -> tuple[Message, ...]:
     """Keep typed messages and exactly one result for each known Tool Call."""
 
     typed: list[Message] = []
-    for item in history:
-        message = item.message if isinstance(item, ContextMessage) else item
+    for message in history:
         if isinstance(message, (UserMessage, AssistantMessage, ToolResultMessage)):
             typed.append(message)
 
-    call_ids = {
-        call.tool_call_id
-        for message in typed
-        if isinstance(message, AssistantMessage)
-        for call in message.tool_calls
-    }
+    visible_call_ids: set[str] = set()
     seen_results: set[str] = set()
     eligible: list[Message] = []
     for message in typed:
+        if isinstance(message, AssistantMessage):
+            visible_call_ids.update(call.tool_call_id for call in message.tool_calls)
+            eligible.append(message)
+            continue
         if isinstance(message, ToolResultMessage):
-            if message.tool_call_id not in call_ids or message.tool_call_id in seen_results:
+            if message.tool_call_id not in visible_call_ids or message.tool_call_id in seen_results:
                 continue
             seen_results.add(message.tool_call_id)
         eligible.append(message)

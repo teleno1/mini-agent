@@ -676,9 +676,7 @@ def _interactive_plan(
         return
     if session_id is None:
         cli_values["plan_mode"] = requested
-        typer.echo(
-            f"Plan Mode {'enabled' if requested else 'disabled'} for the next operation."
-        )
+        typer.echo(f"Plan Mode {'enabled' if requested else 'disabled'} for the next operation.")
         return
     resolver = ConfigurationResolver(workspace, cli_values=cli_values)
     service = SessionConfigurationService(resolver, store)

@@ -306,9 +306,7 @@ class AgentTurnApplication:
             else:
                 user_event = None
             plan_mode_enabled = bool(
-                effective_configuration.plan_mode
-                if effective_configuration is not None
-                else False
+                effective_configuration.plan_mode if effective_configuration is not None else False
             )
             conversation = (*history, user_message)
             context_history = history
@@ -363,6 +361,7 @@ class AgentTurnApplication:
                     history=tuple(
                         message for message in context_history if message is not user_message
                     ),
+                    current_user_event=user_event,
                     configuration=effective_configuration,
                     writer=writer,
                     plan=plan,
@@ -549,8 +548,10 @@ class AgentTurnApplication:
                         completion_report=report,
                     )
 
-                if plan_mode_enabled and plan is None and _requires_plan(
-                    task, response.message.tool_calls
+                if (
+                    plan_mode_enabled
+                    and plan is None
+                    and _requires_plan(task, response.message.tool_calls)
                 ):
                     plan = _new_plan(
                         task,
@@ -838,6 +839,7 @@ class AgentTurnApplication:
         request_id: str,
         resolved_session_id: str,
         history: tuple[Message, ...],
+        current_user_event: SessionEvent | None,
         configuration: EffectiveConfiguration | None,
         writer: SessionWriter | None,
         plan: PlanSnapshot | None,
@@ -853,7 +855,6 @@ class AgentTurnApplication:
         working_boundary = summary_boundary
         last_error: ContextBudgetError | None = None
         for attempt in range(1, 4):
-            selected_events = _selected_context_events(writer, working_boundary)
             try:
                 frame = self._context_builder.build(
                     task,
@@ -869,11 +870,13 @@ class AgentTurnApplication:
                         definition.model_dump(mode="json")
                         for definition in self._tool_registry.definitions()
                     ],
-                    selected_events=selected_events,
                     message_sources=_session_message_sources(
                         writer,
                         working_boundary,
                         working_history,
+                        current_user_event=current_user_event,
+                        summary=working_summary,
+                        plan=plan,
                     ),
                     included_event_range=(
                         (working_boundary + 1, len(writer.events))
@@ -898,12 +901,7 @@ class AgentTurnApplication:
                         compaction_started.payload,
                     )
                 micro_history = self._context_compactor.micro_compact_history(working_history)
-                micro_events = self._context_compactor.micro_compact_events(
-                    selected_events,
-                    writer.events if writer is not None else (),
-                    working_boundary,
-                )
-                if micro_history != working_history or micro_events != tuple(selected_events):
+                if micro_history != working_history:
                     try:
                         micro_frame = self._context_builder.build(
                             task,
@@ -921,11 +919,13 @@ class AgentTurnApplication:
                                 definition.model_dump(mode="json")
                                 for definition in self._tool_registry.definitions()
                             ],
-                            selected_events=micro_events,
                             message_sources=_session_message_sources(
                                 writer,
                                 working_boundary,
                                 micro_history,
+                                current_user_event=current_user_event,
+                                summary=working_summary,
+                                plan=plan,
                             ),
                             included_event_range=(
                                 (working_boundary + 1, len(writer.events))
@@ -955,6 +955,12 @@ class AgentTurnApplication:
                         return micro_frame, micro_history, working_summary, working_boundary
 
                 try:
+                    selected_events = _selected_context_events(writer, working_boundary)
+                    micro_events = self._context_compactor.micro_compact_events(
+                        selected_events,
+                        writer.events if writer is not None else (),
+                        working_boundary,
+                    )
                     compaction = self._context_compactor.compact(
                         task,
                         working_history,
@@ -2032,11 +2038,16 @@ def _session_message_sources(
     writer: SessionWriter | None,
     summary_boundary: int,
     history: Sequence[Message],
+    *,
+    current_user_event: SessionEvent | None,
+    summary: ContextSummary | None,
+    plan: PlanSnapshot | None,
 ) -> tuple[dict[str, object], ...]:
-    """Map visible typed history to exact non-secret Session Event identities."""
+    """Map model-visible Session data to exact non-secret Session Event identities."""
 
     if writer is None:
         return ()
+    sources = _session_state_sources(writer, summary=summary, plan=plan)
     candidates = [
         event
         for event in writer.events
@@ -2050,7 +2061,6 @@ def _session_message_sources(
             SessionEventType.TOOL_INTERRUPTED,
         }
     ]
-    sources: list[dict[str, object]] = []
     cursor = 0
     for message in history:
         for candidate_index in range(cursor, len(candidates)):
@@ -2068,14 +2078,69 @@ def _session_message_sources(
             )
             cursor = candidate_index + 1
             break
+    if current_user_event is not None:
+        sources.append(_context_source(current_user_event, projection="current-user-message"))
     return tuple(sources)
+
+
+def _session_state_sources(
+    writer: SessionWriter,
+    *,
+    summary: ContextSummary | None,
+    plan: PlanSnapshot | None,
+) -> list[dict[str, object]]:
+    """Identify durable source events for visible derived Session state."""
+
+    sources: list[dict[str, object]] = []
+    if summary is not None:
+        event = _latest_state_event(
+            writer.events,
+            SessionEventType.CONTEXT_COMPACTED,
+        )
+        if event is not None:
+            sources.append(_context_source(event, projection="context-summary"))
+    if plan is not None:
+        event = _latest_state_event(
+            writer.events,
+            SessionEventType.PLAN_UPDATED,
+        )
+        if event is not None:
+            sources.append(_context_source(event, projection="plan-snapshot"))
+    return sources
+
+
+def _latest_state_event(
+    events: Sequence[SessionEvent],
+    event_type: SessionEventType,
+) -> SessionEvent | None:
+    for event in reversed(events):
+        if event.event_type is event_type:
+            return event
+    return None
+
+
+def _context_source(event: SessionEvent, *, projection: str) -> dict[str, object]:
+    return {
+        "source_kind": "session-event",
+        "event_id": event.event_id,
+        "sequence": event.sequence,
+        "event_type": event.event_type,
+        "projection": projection,
+    }
 
 
 def _event_matches_message(event: SessionEvent, message: Message) -> bool:
     if isinstance(message, UserMessage):
-        return event.event_type == SessionEventType.USER_MESSAGE
+        return (
+            event.event_type == SessionEventType.USER_MESSAGE
+            and event.payload.get("role") == "user"
+            and event.payload.get("content") == message.content
+        )
     if isinstance(message, AssistantMessage):
-        return event.event_type == SessionEventType.ASSISTANT_MESSAGE
+        return (
+            event.event_type == SessionEventType.ASSISTANT_MESSAGE
+            and event.payload == _assistant_payload(message)
+        )
     if isinstance(message, ToolResultMessage):
         return (
             event.event_type
@@ -2085,6 +2150,8 @@ def _event_matches_message(event: SessionEvent, message: Message) -> bool:
                 SessionEventType.TOOL_INTERRUPTED,
             }
             and event.payload.get("tool_call_id") == message.tool_call_id
+            and event.payload.get("result_text") == message.content
+            and event.payload.get("outcome") == message.outcome
         )
     return False
 

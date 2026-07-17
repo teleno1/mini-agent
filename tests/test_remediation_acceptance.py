@@ -105,22 +105,35 @@ def test_one_interactive_fake_journey_proves_all_remediations(tmp_path: Path) ->
     assert [source["source_kind"] for source in sources] == [
         "session-event",
         "session-event",
+        "session-event",
     ]
     assert [source["event_id"] for source in sources] == [
         assistant_event.event_id,
         tool_completed_event.event_id,
+        next(
+            event.event_id
+            for event in journey.events
+            if event.event_type == SessionEventType.USER_MESSAGE
+        ),
     ]
     assert [source["sequence"] for source in sources] == [
         assistant_event.sequence,
         tool_completed_event.sequence,
+        next(
+            event.sequence
+            for event in journey.events
+            if event.event_type == SessionEventType.USER_MESSAGE
+        ),
     ]
     assert [source["event_type"] for source in sources] == [
         SessionEventType.ASSISTANT_MESSAGE,
         SessionEventType.TOOL_COMPLETED,
+        SessionEventType.USER_MESSAGE,
     ]
     assert [source["projection"] for source in sources] == [
         "assistant-message",
         "tool-result-message",
+        "current-user-message",
     ]
     assert all(
         set(source) == {"source_kind", "event_id", "sequence", "event_type", "projection"}
@@ -152,4 +165,16 @@ def test_fake_journey_context_messages_keep_provider_roles_typed(tmp_path: Path)
         for message in frame.messages
         if message.layer is not ContextLayerName.HISTORY
     )
-    assert journey.manifests[0]["message_sources"] == []
+    sources = cast(list[dict[str, JSONValue]], journey.manifests[0]["message_sources"])
+    user_event = next(
+        event for event in journey.events if event.event_type == SessionEventType.USER_MESSAGE
+    )
+    assert sources == [
+        {
+            "source_kind": "session-event",
+            "event_id": user_event.event_id,
+            "sequence": user_event.sequence,
+            "event_type": SessionEventType.USER_MESSAGE,
+            "projection": "current-user-message",
+        }
+    ]
