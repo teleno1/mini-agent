@@ -36,6 +36,9 @@ def test_presenter_uses_grouped_rail_and_trailing_plain_status() -> None:
         "tool.completed",
         {"tool_call_id": "call-1", "name": "read_file", "outcome": "success"},
     )
+    presenter.on_lifecycle(
+        "model.request.completed", {"input_tokens": 40, "output_tokens": 5}
+    )
     asyncio.run(_render_response(presenter))
 
     rendered = "".join(output)
@@ -44,7 +47,7 @@ def test_presenter_uses_grouped_rail_and_trailing_plain_status() -> None:
     assert "|   [TOOL RESULT] read_file (src/parser.py) - completed" in rendered
     assert "|   > The parser is consistent." in rendered
     assert "|   [COMPLETED] Completed" in rendered
-    assert "Status: context 0/100 tokens" in rendered
+    assert "Status: context 40/100 tokens" in rendered
     assert "Commands: /help  /plan  /config  /sessions  /exit" in rendered
     assert "Turn 1" not in rendered
     assert "\r" not in rendered

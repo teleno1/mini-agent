@@ -47,8 +47,7 @@ class ConversationPresenter:
         self._response_has_text = False
         self._current_calls: dict[str, tuple[str, Mapping[str, object]]] = {}
         self._live_plan: Mapping[str, object] | None = None
-        self._context_input_tokens = 0
-        self._context_output_tokens = 0
+        self._context_tokens = 0
         self._stream = BoundedStreamRenderer(
             plain_sink=self._write_fragment,
             max_queue_size=64,
@@ -143,8 +142,7 @@ class ConversationPresenter:
             return
         if event_type == "model.request.completed":
             self._clear_status()
-            self._context_input_tokens += _nonnegative_int(payload.get("input_tokens"))
-            self._context_output_tokens += _nonnegative_int(payload.get("output_tokens"))
+            self._context_tokens = _nonnegative_int(payload.get("input_tokens"))
             return
         if event_type == "tool.started":
             name = _string(payload.get("name"))
@@ -229,7 +227,7 @@ class ConversationPresenter:
         self._render_live_plan()
         self._line()
         self._emit("---")
-        used = self._context_input_tokens + self._context_output_tokens
+        used = self._context_tokens
         percentage = used / self._context_window_tokens * 100
         self._emit(
             f"Status: context {used}/{self._context_window_tokens} tokens ({percentage:.1f}%)"
