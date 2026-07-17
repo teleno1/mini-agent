@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from unittest.mock import patch
 
 from typer.testing import CliRunner
 
@@ -78,8 +79,16 @@ def run_fake_cli_journey(
     *,
     chunks: Sequence[str] = ("Mini Agent is a small, ", "inspectable coding agent."),
     responses: Sequence[Sequence[StreamEvent]] | None = None,
+    cli_args: Sequence[str] = (),
+    interactive: bool = False,
+    input_text: str | None = None,
 ) -> FakeCliJourney:
-    """Run one offline CLI journey and return only public acceptance evidence."""
+    """Run one offline CLI journey and return only public acceptance evidence.
+
+    ``interactive=True`` drives the same production interactive Session loop
+    used by a terminal.  The terminal capability check is patched only at the
+    adapter boundary because ``CliRunner`` itself is intentionally non-TTY.
+    """
 
     providers: list[ScriptedFakeModelProvider] = []
 
@@ -97,19 +106,27 @@ def run_fake_cli_journey(
         providers.append(provider)
         return provider
 
-    result = CliRunner().invoke(
-        create_app(factory),
-        ["--workspace", str(workspace), task],
-    )
+    arguments = ["--workspace", str(workspace), *cli_args]
+    if not interactive:
+        arguments.append(task)
+    prompt_input = input_text
+    if interactive and prompt_input is None:
+        prompt_input = f"{task}\n/exit\n"
+    with patch("mini_agent.cli.app._is_terminal_input", return_value=interactive):
+        result = CliRunner().invoke(create_app(factory), arguments, input=prompt_input)
     sessions = SessionStore(workspace).list_sessions()
     if len(sessions) != 1:
         raise AssertionError(f"expected one durable Session, found {len(sessions)}")
-    if len(providers) != 1:
-        raise AssertionError(f"expected one Fake Provider, found {len(providers)}")
+    active_providers = [provider for provider in providers if provider.requests]
+    if len(active_providers) != 1:
+        raise AssertionError(
+            f"expected one active Fake Provider, found {len(active_providers)} "
+            f"from {len(providers)} compositions"
+        )
     return FakeCliJourney(
         output=result.stdout,
         exit_code=result.exit_code,
-        provider=providers[0],
+        provider=active_providers[0],
         snapshot=SessionStore(workspace).read(sessions[0].session_id),
     )
 
