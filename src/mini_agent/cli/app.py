@@ -208,6 +208,27 @@ def _resolve_configuration(
     return resolver, resolver.resolve(session_overrides=overrides)
 
 
+def _persist_explicit_plan_mode(
+    workspace: Path,
+    store: SessionStore,
+    session_id: str,
+    *,
+    cli_values: Mapping[str, object],
+) -> None:
+    """Persist an explicit one-shot Plan choice before the next Turn starts."""
+
+    if "plan_mode" not in cli_values:
+        return
+    requested = cli_values["plan_mode"]
+    if not isinstance(requested, bool):
+        raise ConfigurationError("plan_mode must be a boolean")
+    current = store.resume(session_id).configuration_overrides.get("plan_mode", False)
+    if current == requested:
+        return
+    resolver = ConfigurationResolver(workspace, cli_values=dict(cli_values))
+    SessionConfigurationService(resolver, store).update(session_id, {"plan_mode": requested})
+
+
 def _build_application(
     workspace: Path,
     store: SessionStore,
@@ -289,6 +310,39 @@ async def _run_turn(
     turn_task: asyncio.Task[AgentTurnResult] | None = None
 
     try:
+        if selected_session is None and "plan_mode" in values:
+            try:
+                # Validate all startup configuration, including credentials,
+                # before creating a Session solely to persist the explicit
+                # runtime choice.
+                ConfigurationResolver(workspace, cli_values=values).resolve()
+            except ConfigurationError as exc:
+                _report_configuration_failure(
+                    workspace,
+                    exc,
+                    session_id=None,
+                    id_generator=ids,
+                )
+                return TurnRunOutcome(None, configuration_error=True)
+            selected_session = ids.new_id("session")
+            with store.create(selected_session):
+                pass
+        if selected_session is not None:
+            try:
+                _persist_explicit_plan_mode(
+                    workspace,
+                    store,
+                    selected_session,
+                    cli_values=values,
+                )
+            except ConfigurationError as exc:
+                _report_configuration_failure(
+                    workspace,
+                    exc,
+                    session_id=selected_session,
+                    id_generator=ids,
+                )
+                return TurnRunOutcome(selected_session, configuration_error=True)
         try:
             application, provider, _resolver, _configuration, diagnostics = _build_application(
                 workspace,
@@ -563,6 +617,9 @@ def _interactive_config(
                 return
             raw_key, raw_value = token.split("=", 1)
             key = _canonical_config_key(raw_key)
+            if key == "plan_mode":
+                typer.echo("Use /plan on or /plan off to change Plan Mode.", err=True)
+                return
             try:
                 overrides[key] = _config_value(key, raw_value)
             except ValueError:
@@ -601,6 +658,35 @@ def _interactive_config(
     typer.echo(json.dumps(configuration.as_dict(), ensure_ascii=False, indent=2, sort_keys=True))
 
 
+def _interactive_plan(
+    argument: str,
+    workspace: Path,
+    store: SessionStore,
+    session_id: str | None,
+    cli_values: dict[str, object],
+) -> None:
+    requested = {"on": True, "off": False}.get(argument.casefold())
+    if requested is None:
+        typer.echo("Usage: /plan on|off", err=True)
+        return
+    if session_id is None:
+        cli_values["plan_mode"] = requested
+        typer.echo(
+            f"Plan Mode {'enabled' if requested else 'disabled'} for the next operation."
+        )
+        return
+    resolver = ConfigurationResolver(workspace, cli_values=cli_values)
+    service = SessionConfigurationService(resolver, store)
+    try:
+        configuration = service.update(session_id, {"plan_mode": requested})
+    except SessionConfigurationError as exc:
+        typer.echo(f"Plan Mode change rejected: {exc}", err=True)
+        return
+    cli_values["plan_mode"] = requested
+    state = "enabled" if configuration.plan_mode else "disabled"
+    typer.echo(f"Plan Mode {state} for the next operation.")
+
+
 def _interactive_loop(
     workspace: Path,
     store: SessionStore,
@@ -622,10 +708,17 @@ def _interactive_loop(
             typer.echo("Session ended.")
             return
         if lowered in {"/help", "help"}:
-            typer.echo("Commands: /config [show|set key=value|reset], /sessions, /exit")
+            typer.echo(
+                "Commands: /config [show|set key=value|reset], /plan on|off, /sessions, /exit"
+            )
             continue
         if lowered == "/sessions":
             _display_sessions(workspace)
+            continue
+        if lowered == "/plan" or lowered.startswith("/plan "):
+            _interactive_plan(
+                task[len("/plan") :].strip(), workspace, store, session_id, cli_values
+            )
             continue
         if lowered.startswith("/config"):
             remainder = task[len("/config") :].strip()
@@ -851,6 +944,13 @@ def _callback_impl(
         str | None,
         typer.Option("--permission-mode", help="Permission mode override."),
     ] = None,
+    plan_mode: Annotated[
+        bool | None,
+        typer.Option(
+            "--plan-mode/--no-plan-mode",
+            help="Explicitly enable or disable Plans for the next operation.",
+        ),
+    ] = None,
     version: Annotated[
         bool | None,
         typer.Option(
@@ -874,6 +974,7 @@ def _callback_impl(
             "model": model,
             "provider_base_url": base_url,
             "permission_mode": permission_mode,
+            "plan_mode": plan_mode,
         }.items()
         if value is not None
     }
@@ -948,6 +1049,13 @@ def create_app(provider_factory: ProviderFactory = production_provider_factory) 
             str | None,
             typer.Option("--permission-mode", help="Permission mode override."),
         ] = None,
+        plan_mode: Annotated[
+            bool | None,
+            typer.Option(
+                "--plan-mode/--no-plan-mode",
+                help="Explicitly enable or disable Plans for the next operation.",
+            ),
+        ] = None,
         version: Annotated[
             bool | None,
             typer.Option(
@@ -964,6 +1072,7 @@ def create_app(provider_factory: ProviderFactory = production_provider_factory) 
             model,
             base_url,
             permission_mode,
+            plan_mode,
             version,
             provider_factory=provider_factory,
         )

@@ -238,13 +238,23 @@ def test_cli_renders_complex_plan_and_compaction_as_semantic_lines(tmp_path: Pat
         ],
     )
 
-    planned = runner.invoke(planned_app, ["--workspace", str(tmp_path), "inspect both files"])
+    planned = runner.invoke(
+        planned_app,
+        ["--workspace", str(tmp_path), "--plan-mode", "inspect both files"],
+    )
 
     assert planned.exit_code == 0
     assert "Plan:" in planned.stdout
     assert "Inspect the relevant repository code" in planned.stdout
     assert "read_file (one.txt) - completed" in planned.stdout
     assert "read_file (two.txt) - completed" in planned.stdout
+    planned_session = SessionStore(tmp_path).list_sessions()[0]
+    plan_configuration = next(
+        event
+        for event in SessionStore(tmp_path).read(planned_session.session_id).events
+        if event.event_type == SessionEventType.CONFIGURATION_CHANGED
+    )
+    assert plan_configuration.payload["overrides"] == {"plan_mode": True}
 
     compact = tmp_path / "compact"
     compact.mkdir()

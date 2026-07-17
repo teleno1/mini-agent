@@ -265,6 +265,7 @@ class AgentTurnApplication:
         active_request_event: SessionEvent | None = None
         last_failure: Failure | None = None
         effective_configuration = self._configuration
+        plan_mode_enabled = False
 
         try:
             if self._session_store is not None:
@@ -304,6 +305,11 @@ class AgentTurnApplication:
                 )
             else:
                 user_event = None
+            plan_mode_enabled = bool(
+                effective_configuration.plan_mode
+                if effective_configuration is not None
+                else False
+            )
             conversation = (*history, user_message)
             context_history = history
             budgets = self._turn_budgets(effective_configuration)
@@ -543,7 +549,9 @@ class AgentTurnApplication:
                         completion_report=report,
                     )
 
-                if plan is None and _requires_plan(task, response.message.tool_calls):
+                if plan_mode_enabled and plan is None and _requires_plan(
+                    task, response.message.tool_calls
+                ):
                     plan = _new_plan(
                         task,
                         response.message.tool_calls,

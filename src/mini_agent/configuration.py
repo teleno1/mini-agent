@@ -114,7 +114,10 @@ DEFAULTS: Mapping[str, object] = MappingProxyType(
     }
 )
 
-CONFIGURATION_FIELDS = frozenset(DEFAULTS)
+# ``plan_mode`` is a runtime control, not a project/user/environment value.
+# It is still part of the effective configuration so the Agent Loop can
+# capture it at Turn start and Session overrides retain normal provenance.
+CONFIGURATION_FIELDS = frozenset((*DEFAULTS, "plan_mode"))
 ACTIVE_SESSION_FORBIDDEN_FIELDS = frozenset(
     {"api_key", "provider_base_url", "base_url", "workspace", "session_storage"}
 )
@@ -130,6 +133,7 @@ SESSION_OVERRIDE_FIELDS = frozenset(
         "artifact_threshold_bytes",
         "instruction_file_bytes",
         "instruction_chain_bytes",
+        "plan_mode",
     }
 )
 
@@ -192,6 +196,7 @@ class EffectiveConfiguration:
     artifact_threshold_bytes: int
     instruction_file_bytes: int
     instruction_chain_bytes: int
+    plan_mode: bool = False
     api_key: str | None = field(default=None, repr=False)
     provenance: Mapping[str, FieldProvenance] = field(default_factory=dict, repr=False)
 
@@ -223,6 +228,7 @@ class EffectiveConfiguration:
             "artifact_threshold_bytes": self.artifact_threshold_bytes,
             "instruction_file_bytes": self.instruction_file_bytes,
             "instruction_chain_bytes": self.instruction_chain_bytes,
+            "plan_mode": self.plan_mode,
         }
 
     def as_dict(self, *, include_provenance: bool = True) -> dict[str, JSONValue]:
@@ -290,6 +296,7 @@ class ConfigurationResolver:
         confirm_less_restrictive: bool = False,
     ) -> EffectiveConfiguration:
         values: dict[str, object] = dict(DEFAULTS)
+        values["plan_mode"] = False
         provenance = {
             key: FieldProvenance(ConfigurationSource.BUILTIN, _json_value(value))
             for key, value in values.items()
@@ -352,6 +359,11 @@ class ConfigurationResolver:
         values: dict[str, object] = {}
         for raw_key, raw_value in raw.items():
             key = _canonical_key(raw_key, source, path)
+            if key == "plan_mode":
+                raise ForbiddenConfigurationKey(
+                    f"{source.value} {path}: plan_mode is runtime-only; use --plan-mode "
+                    "or /plan on|off"
+                )
             if key in _SENSITIVE_KEYS or key in {"provider_base_url", "base_url"} and project:
                 raise ForbiddenConfigurationKey(
                     f"{source.value} {path}: {raw_key!r} cannot be set in project configuration"
@@ -573,6 +585,10 @@ def _validate_field(key: str, value: object, source: ConfigurationSource) -> obj
                 f"{source.value}: permission_mode must be suggest, auto-edit, or full-auto"
             )
         return PermissionMode(value)
+    if key == "plan_mode":
+        if not isinstance(value, bool):
+            raise ConfigurationError(f"{source.value}: plan_mode must be a boolean")
+        return value
     if key in {"model", "provider_base_url"}:
         if not isinstance(value, str) or not value.strip():
             raise ConfigurationError(f"{source.value}: {key} must be a non-blank string")
@@ -612,6 +628,7 @@ def _build_configuration(
         artifact_threshold_bytes=cast(int, values["artifact_threshold_bytes"]),
         instruction_file_bytes=cast(int, values["instruction_file_bytes"]),
         instruction_chain_bytes=cast(int, values["instruction_chain_bytes"]),
+        plan_mode=cast(bool, values["plan_mode"]),
         api_key=api_key,
         provenance=provenance,
     )

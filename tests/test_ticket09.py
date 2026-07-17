@@ -12,6 +12,7 @@ from mini_agent.adapters.clocks import DeterministicClock
 from mini_agent.adapters.ids import DeterministicIdGenerator
 from mini_agent.adapters.session_store import SessionStore
 from mini_agent.application.agent import AgentTurnApplication, AgentTurnError, TurnBudgets
+from mini_agent.configuration import ConfigurationResolver
 from mini_agent.context import ContextBuilder, ContextFrame
 from mini_agent.domain.messages import (
     AssistantMessage,
@@ -156,6 +157,9 @@ def _application(tmp_path: Path):
         id_generator=ids,
         session_store=store,
         context_builder=ContextBuilder(tmp_path),
+        configuration=ConfigurationResolver(tmp_path).resolve(
+            session_overrides={"plan_mode": True}
+        ),
         permission_gate=gate,
     )
     return application, provider, store, gate, verify
