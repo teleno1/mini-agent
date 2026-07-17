@@ -11,6 +11,26 @@ Issues and PRDs for this repo live as GitHub issues. Use the `gh` CLI for all op
 - **Apply/remove labels**: use `gh issue edit` with `--add-label` or `--remove-label`.
 - **Close an issue**: `gh issue close <number> --comment "..."`
 
+## Implementation ticket lifecycle
+
+GitHub Issues are the only implementation-ticket tracker. Do not infer a GitHub
+Issue from a local filename or use `.scratch/` files as ticket state.
+
+When an Agent is given a GitHub Issue URL or number, that Issue is the selected
+ticket and the user has authorized the state changes for that Issue only:
+
+1. Read the complete Issue and comments, relevant specification sections, the
+   repository-root `CONTEXT.md`, and completed blocker Issues.
+2. Verify native blockers are closed, then claim the Issue by assigning it to
+   the current GitHub user **before editing**.
+3. Implement and verify every acceptance criterion.
+4. Post a `## Completion evidence` comment with concrete verification evidence
+   and the commit SHA, then close the Issue. Leave it open when any criterion
+   remains unmet.
+
+Only the repository-root `CONTEXT.md` is required by default. Read an
+additional context document only when the selected Issue explicitly links it.
+
 Infer the repository from `git remote -v`; `gh` does this automatically inside the repository.
 
 ## Pull requests as a triage surface

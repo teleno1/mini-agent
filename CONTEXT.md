@@ -144,6 +144,11 @@ A structured replacement for older session events when the active model context 
 
 The user-visible, mutable list of task steps and their states maintained during a Session.
 
+## Plan Mode
+
+The explicit Session setting that permits a Plan to be created and rendered. It is disabled by default; task complexity alone does not enable it.
+_Avoid_: automatic planning, implicit plan
+
 ## Completion Report
 
 The structured factual hand-off for a normal no-Tool Turn stop, covering outcome, verification performed or unavailable, changed files, unresolved work, and next action.

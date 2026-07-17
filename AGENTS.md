@@ -14,19 +14,22 @@ This repository uses the single-context domain-documentation layout. See `docs/a
 
 ## Implementation source of truth
 
-The implementation-ready specification is `docs/specs/mini-agent-mvp.md`. Implementation tickets live in `.scratch/implement-mini-agent-mvp/issues/`.
+The implementation-ready specification is `docs/specs/mini-agent-mvp.md`. Implementation tickets, their blockers, assignments, acceptance evidence, and completion state live in GitHub Issues for `teleno1/mini-agent`.
+
+The `.scratch/` directory contains historical or throwaway local material only. It is never an implementation-ticket tracker and its filenames or numbers must not be matched to GitHub Issue numbers.
 
 When a ticket and the specification appear inconsistent, stop and surface the conflict. Do not silently change the ticket, weaken the specification, or choose whichever requirement is easier.
 
-## Ticket-specific rules
+## GitHub implementation workflow
 
-- If the user does not name a ticket, select the lowest-numbered `ready-for-agent` ticket whose blockers are all `completed`.
+- When the user names a GitHub Issue URL or number, that Issue is the selected implementation ticket. Naming it authorizes the ticket's assignment, evidence comment, and closure; it does not authorize changes to other remote Issues.
+- If the user does not name a ticket, select the lowest-numbered open `ready-for-agent` GitHub Issue whose native blockers are all closed.
 - Work on one ticket at a time unless the user explicitly authorizes more.
-- Before editing, read the complete ticket, its relevant specification sections, `CONTEXT.md`, and completed blocker tickets.
-- Set the selected ticket to `in-progress` when work begins.
+- Before editing, read the complete GitHub Issue and comments, its relevant specification sections, the repository-root `CONTEXT.md`, and completed blocker Issues. Do not expect a ticket-local `CONTEXT.md` unless the selected Issue explicitly links one.
+- Before editing, verify the blockers are closed and assign the selected GitHub Issue to the current GitHub user. This assignment is the claim.
 - Treat every acceptance checkbox as required. Track each item in the work plan and verify it separately.
-- Mark a checkbox `[x]` only when concrete evidence exists. Record that evidence under `## Completion evidence` in the ticket.
-- Set the ticket to `completed` only after every acceptance checkbox is checked and evidenced. Otherwise leave it `in-progress` and record what remains.
+- Mark a checkbox `[x]` only when concrete evidence exists. Record that evidence in a GitHub Issue comment headed `## Completion evidence`.
+- Close the selected GitHub Issue only after every acceptance checkbox is checked and evidenced. The closing comment must name the verification evidence and commit SHA. Otherwise leave it open and comment what remains.
 - Do not implement later tickets or rewrite requirements to fit incomplete work.
 
 ## Git safety
