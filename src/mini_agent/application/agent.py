@@ -10,7 +10,7 @@ import os
 import random
 import threading
 import warnings
-from collections.abc import Awaitable, Callable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any, cast
@@ -862,6 +862,11 @@ class AgentTurnApplication:
                         for definition in self._tool_registry.definitions()
                     ],
                     selected_events=selected_events,
+                    message_sources=_session_message_sources(
+                        writer,
+                        working_boundary,
+                        working_history,
+                    ),
                     included_event_range=(
                         (working_boundary + 1, len(writer.events))
                         if writer is not None and len(writer.events) > working_boundary
@@ -909,6 +914,11 @@ class AgentTurnApplication:
                                 for definition in self._tool_registry.definitions()
                             ],
                             selected_events=micro_events,
+                            message_sources=_session_message_sources(
+                                writer,
+                                working_boundary,
+                                micro_history,
+                            ),
                             included_event_range=(
                                 (working_boundary + 1, len(writer.events))
                                 if writer is not None and len(writer.events) > working_boundary
@@ -2008,6 +2018,75 @@ def _selected_context_events(
         for event in writer.events
         if event.event_type.startswith("tool.") and event.sequence > summary_boundary
     )
+
+
+def _session_message_sources(
+    writer: SessionWriter | None,
+    summary_boundary: int,
+    history: Sequence[Message],
+) -> tuple[dict[str, object], ...]:
+    """Map visible typed history to exact non-secret Session Event identities."""
+
+    if writer is None:
+        return ()
+    candidates = [
+        event
+        for event in writer.events
+        if event.sequence > summary_boundary
+        and event.event_type
+        in {
+            SessionEventType.USER_MESSAGE,
+            SessionEventType.ASSISTANT_MESSAGE,
+            SessionEventType.TOOL_COMPLETED,
+            SessionEventType.TOOL_FAILED,
+            SessionEventType.TOOL_INTERRUPTED,
+        }
+    ]
+    sources: list[dict[str, object]] = []
+    cursor = 0
+    for message in history:
+        for candidate_index in range(cursor, len(candidates)):
+            event = candidates[candidate_index]
+            if not _event_matches_message(event, message):
+                continue
+            sources.append(
+                {
+                    "source_kind": "session-event",
+                    "event_id": event.event_id,
+                    "sequence": event.sequence,
+                    "event_type": event.event_type,
+                    "projection": _message_projection(message),
+                }
+            )
+            cursor = candidate_index + 1
+            break
+    return tuple(sources)
+
+
+def _event_matches_message(event: SessionEvent, message: Message) -> bool:
+    if isinstance(message, UserMessage):
+        return event.event_type == SessionEventType.USER_MESSAGE
+    if isinstance(message, AssistantMessage):
+        return event.event_type == SessionEventType.ASSISTANT_MESSAGE
+    if isinstance(message, ToolResultMessage):
+        return (
+            event.event_type
+            in {
+                SessionEventType.TOOL_COMPLETED,
+                SessionEventType.TOOL_FAILED,
+                SessionEventType.TOOL_INTERRUPTED,
+            }
+            and event.payload.get("tool_call_id") == message.tool_call_id
+        )
+    return False
+
+
+def _message_projection(message: Message) -> str:
+    if isinstance(message, UserMessage):
+        return "user-message"
+    if isinstance(message, AssistantMessage):
+        return "assistant-message"
+    return "tool-result-message"
 
 
 def _event_request_id(event: SessionEvent | None) -> str | None:

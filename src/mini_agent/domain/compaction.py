@@ -570,7 +570,27 @@ def messages_after_boundary(events: Sequence[object], boundary: int) -> tuple[Me
                 and isinstance(outcome, str)
             ):
                 messages.append(ToolResultMessage(call_id, result_text, outcome))
-    return tuple(messages)
+    return _paired_message_history(messages)
+
+
+def _paired_message_history(messages: Sequence[Message]) -> tuple[Message, ...]:
+    """Admit terminal Tool Results only when their assistant call is present."""
+
+    call_ids = {
+        call.tool_call_id
+        for message in messages
+        if isinstance(message, AssistantMessage)
+        for call in message.tool_calls
+    }
+    seen_results: set[str] = set()
+    paired: list[Message] = []
+    for message in messages:
+        if isinstance(message, ToolResultMessage):
+            if message.tool_call_id not in call_ids or message.tool_call_id in seen_results:
+                continue
+            seen_results.add(message.tool_call_id)
+        paired.append(message)
+    return tuple(paired)
 
 
 def _validate_references(

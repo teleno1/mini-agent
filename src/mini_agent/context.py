@@ -7,7 +7,7 @@ import json
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
-from typing import Literal
+from typing import Literal, cast
 
 from mini_agent.configuration import ConfigurationResolver, EffectiveConfiguration
 from mini_agent.domain.compaction import (
@@ -18,7 +18,12 @@ from mini_agent.domain.compaction import (
     TokenEstimator,
     response_reserve_tokens,
 )
-from mini_agent.domain.messages import AssistantMessage, Message, ToolResultMessage
+from mini_agent.domain.messages import (
+    AssistantMessage,
+    Message,
+    ToolResultMessage,
+    UserMessage,
+)
 from mini_agent.domain.sessions import JSONValue
 from mini_agent.instructions import InstructionLoader, InstructionSet
 
@@ -126,6 +131,38 @@ class ContextLayer:
 
 
 @dataclass(frozen=True, slots=True)
+class ContextMessageSource:
+    """Non-secret identity for one Session-derived provider message."""
+
+    source_kind: str
+    event_id: str
+    sequence: int
+    event_type: str
+    projection: str
+
+    def __post_init__(self) -> None:
+        if self.source_kind != "session-event":
+            raise ValueError("Context message sources must identify Session Events")
+        if not self.event_id.strip():
+            raise ValueError("Context message source event ID cannot be blank")
+        if isinstance(self.sequence, bool) or self.sequence < 1:
+            raise ValueError("Context message source sequence must be positive")
+        if not self.event_type.strip():
+            raise ValueError("Context message source event type cannot be blank")
+        if not self.projection.strip():
+            raise ValueError("Context message source projection cannot be blank")
+
+    def as_dict(self) -> dict[str, JSONValue]:
+        return {
+            "source_kind": self.source_kind,
+            "event_id": self.event_id,
+            "sequence": self.sequence,
+            "event_type": self.event_type,
+            "projection": self.projection,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class ContextManifest:
     """Non-secret provenance for one request's derived Context Frame."""
 
@@ -137,6 +174,7 @@ class ContextManifest:
     request_parameters: Mapping[str, JSONValue]
     summary_boundary: int
     included_event_range: tuple[int, int] | None
+    message_sources: tuple[ContextMessageSource, ...] = ()
 
     @property
     def token_estimate(self) -> int:
@@ -161,6 +199,7 @@ class ContextManifest:
             "request_parameters": dict(self.request_parameters),
             "summary_boundary": self.summary_boundary,
             "included_event_range": event_range,
+            "message_sources": [source.as_dict() for source in self.message_sources],
             "token_estimate": self.token_estimate,
             "manifest_hash": self.manifest_hash_without_self(),
         }
@@ -179,6 +218,7 @@ class ContextManifest:
                 "request_parameters": dict(self.request_parameters),
                 "summary_boundary": self.summary_boundary,
                 "included_event_range": event_range,
+                "message_sources": [source.as_dict() for source in self.message_sources],
             }
         )
 
@@ -240,6 +280,7 @@ class ContextBuilder:
         recovery: str | Mapping[str, object] | None = None,
         tool_definitions: Sequence[Mapping[str, object] | str] = (),
         selected_events: Sequence[Mapping[str, object] | str] = (),
+        message_sources: Sequence[Mapping[str, object] | ContextMessageSource] = (),
         summary_boundary: int = 0,
         included_event_range: tuple[int, int] | None = None,
         automatic: bool = True,
@@ -305,7 +346,8 @@ class ContextBuilder:
                     "durable Session projection",
                 )
             )
-        history_content = _render_history(history, selected_events)
+        eligible_history = _eligible_history(history)
+        history_content = _render_history(eligible_history, selected_events)
         if history_content:
             layers.append(
                 ContextLayer.create(
@@ -352,8 +394,9 @@ class ContextBuilder:
             },
             summary_boundary=summary_boundary,
             included_event_range=included_event_range,
+            message_sources=_normalize_message_sources(message_sources),
         )
-        messages = _frame_messages(layers, history, selected_events)
+        messages = _frame_messages(layers, eligible_history)
         structured_tool_definitions = tuple(
             _json_object(value) for value in tool_definitions if isinstance(value, Mapping)
         )
@@ -404,21 +447,80 @@ def _render_history(
     history: Sequence[Message | ContextMessage],
     selected_events: Sequence[Mapping[str, object] | str],
 ) -> str:
+    del selected_events
     sections: list[str] = []
     for message in history:
         if isinstance(message, ContextMessage):
             sections.append(f"{message.role}: {message.content}")
         else:
             sections.append(f"{message.role}: {_message_content(message)}")
-    for event in selected_events:
-        sections.append(f"event: {_render_value(event)}")
     return "\n".join(sections)
+
+
+def _eligible_history(history: Sequence[Message | ContextMessage]) -> tuple[Message, ...]:
+    """Keep typed messages and exactly one result for each known Tool Call."""
+
+    typed: list[Message] = []
+    for item in history:
+        message = item.message if isinstance(item, ContextMessage) else item
+        if isinstance(message, (UserMessage, AssistantMessage, ToolResultMessage)):
+            typed.append(message)
+
+    call_ids = {
+        call.tool_call_id
+        for message in typed
+        if isinstance(message, AssistantMessage)
+        for call in message.tool_calls
+    }
+    seen_results: set[str] = set()
+    eligible: list[Message] = []
+    for message in typed:
+        if isinstance(message, ToolResultMessage):
+            if message.tool_call_id not in call_ids or message.tool_call_id in seen_results:
+                continue
+            seen_results.add(message.tool_call_id)
+        eligible.append(message)
+    return tuple(eligible)
+
+
+def _normalize_message_sources(
+    sources: Sequence[Mapping[str, object] | ContextMessageSource],
+) -> tuple[ContextMessageSource, ...]:
+    normalized: list[ContextMessageSource] = []
+    for source in sources:
+        if isinstance(source, ContextMessageSource):
+            normalized.append(source)
+            continue
+        source_kind = source.get("source_kind")
+        event_id = source.get("event_id")
+        sequence = source.get("sequence")
+        event_type = source.get("event_type")
+        projection = source.get("projection")
+        if not all(
+            isinstance(value, str) for value in (source_kind, event_id, event_type, projection)
+        ):
+            raise ValueError("Context message source identity fields must be strings")
+        source_kind = cast(str, source_kind)
+        event_id = cast(str, event_id)
+        event_type = cast(str, event_type)
+        projection = cast(str, projection)
+        if isinstance(sequence, bool) or not isinstance(sequence, int):
+            raise ValueError("Context message source sequence must be an integer")
+        normalized.append(
+            ContextMessageSource(
+                source_kind=source_kind,
+                event_id=event_id,
+                sequence=sequence,
+                event_type=event_type,
+                projection=projection,
+            )
+        )
+    return tuple(normalized)
 
 
 def _frame_messages(
     layers: Sequence[ContextLayer],
-    history: Sequence[Message | ContextMessage],
-    selected_events: Sequence[Mapping[str, object] | str],
+    history: Sequence[Message],
 ) -> tuple[ContextMessage, ...]:
     messages: list[ContextMessage] = []
     for layer in layers:
@@ -433,14 +535,9 @@ def _frame_messages(
             )
             continue
         for item in history:
-            if isinstance(item, ContextMessage):
-                role: ContextRole = item.role
-                content = item.content
-                source_message = item.message
-            else:
-                role = item.role
-                content = _message_content(item)
-                source_message = item
+            role: ContextRole = item.role
+            content = _message_content(item)
+            source_message = item
             messages.append(
                 ContextMessage(
                     role=role,
@@ -448,15 +545,6 @@ def _frame_messages(
                     layer=layer.name,
                     authority=layer.authority,
                     message=source_message,
-                )
-            )
-        for event in selected_events:
-            messages.append(
-                ContextMessage(
-                    role="user",
-                    content=f"event: {_render_value(event)}",
-                    layer=layer.name,
-                    authority=layer.authority,
                 )
             )
     return tuple(messages)
@@ -517,6 +605,7 @@ __all__ = [
     "ContextLayer",
     "ContextLayerName",
     "ContextManifest",
+    "ContextMessageSource",
     "ContextMessage",
     "ContextSummary",
     "SummaryValidationError",

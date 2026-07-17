@@ -23,7 +23,12 @@ from mini_agent.configuration import (
     initialize_project,
 )
 from mini_agent.context import ContextBuilder, ContextLayerName
-from mini_agent.domain.messages import AssistantMessage, ToolResultMessage, UserMessage
+from mini_agent.domain.messages import (
+    AssistantMessage,
+    ToolCallBlock,
+    ToolResultMessage,
+    UserMessage,
+)
 from mini_agent.instructions import (
     InstructionBoundaryError,
     InstructionConflictError,
@@ -289,7 +294,10 @@ def test_context_frame_authority_order_manifest_and_budget(tmp_path: Path) -> No
         targets=["src/module.py"],
         history=(
             UserMessage("past question"),
-            AssistantMessage("past answer"),
+            AssistantMessage(
+                "past answer",
+                (ToolCallBlock("call-1", "read_file", {"path": "note.txt"}),),
+            ),
             ToolResultMessage("call-1", "file contents", "success"),
         ),
         summary={"objective": "test"},
