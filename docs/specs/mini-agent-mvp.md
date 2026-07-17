@@ -36,8 +36,8 @@ The product is an independent learning project. It adopts publicly described age
 15. As a user, I want changed Tool arguments to require a new decision, so that an approval cannot be reused for a different operation.
 16. As a repository maintainer, I want root and nested `AGENTS.md` instructions applied by path, so that project and directory conventions reach the Agent.
 17. As a security-conscious user, I want repository content kept below system safety authority, so that prompt injection in ordinary files cannot expand privileges.
-18. As a user, I want complex work represented by a visible Plan, so that I can understand current progress without seeing hidden reasoning.
-19. As a user, I want simple tasks to avoid unnecessary Plans, so that the interface stays lightweight.
+18. As a user, I want to explicitly enable Plan Mode before complex work is represented by a visible Plan, so that planning is available when I choose it without exposing hidden reasoning.
+19. As a user, I want Plan Mode disabled by default and simple tasks to avoid unnecessary Plans, so that the interface stays lightweight.
 20. As a user, I want large Tool Results stored as Artifacts with bounded previews, so that useful evidence survives without exhausting model context.
 21. As a user, I want long Sessions compacted into structured summaries, so that the Agent can continue while preserving objectives, constraints, decisions, changes, failures, and next steps.
 22. As a user, I want original Session Events retained after compaction, so that a generated summary never becomes the only historical record.
@@ -84,6 +84,16 @@ The product is an independent learning project. It adopts publicly described age
 - Unknown or illegally ordered Provider events are protocol Failures. A Provider without reliable system-level instructions and structured Tool Calls is incompatible with Agent mode.
 - A broken stream does not create a formal assistant message. Rendered text remains visibly incomplete, partial Tool arguments are discarded, and retry begins from the last durable Context Frame.
 - Use a bounded renderer queue with upstream backpressure and coalesced text refresh. Plain-text fallback must preserve the Agent Loop when Rich/ANSI rendering fails.
+
+### Conversational CLI and Context Frame remediation contract
+
+- Plan Mode is an explicit runtime Session setting named `plan_mode`, disabled by default. Complexity, model output, repository content, instructions, ordinary configuration, and environment values cannot enable it. A one-shot flag or interactive command may change it for the next operation through the existing Session override lifecycle.
+- A Turn captures Plan Mode at its start. When enabled, the existing complexity heuristic remains a second gate; when disabled, the Turn creates no new Plan lifecycle event or Plan presentation. Existing `plan.updated` and `plan.reset` event names, payloads, schema version, Resume behavior, and historical snapshots remain unchanged.
+- The terminal permission adapter presents one stable numeric menu: `1` allow once, `2` allow the exact normalized call for the Session, `3` deny, and `4` cancel. It translates only these digits into the existing semantic confirmation values. Invalid input re-prompts without a decision; EOF, abort, I/O failure, and non-interactive input deny without prompting. Permission Policy rules, exact-grant scope, argument-hash invalidation, durable metadata, and Tool outcomes are unchanged.
+- The production transcript is a selected conversation-block view. A user request begins a block, Agent text and concise Tool/permission activity stay attached to that block, the latest live Plan is shown only when Plan Mode is active, and trailing status is plain text with context usage and slash-command hints. No Turn labels, prototype controls, ANSI color, cursor positioning, or terminal width are required for meaning. Completion, failure, cancellation, and incomplete-stream states remain explicit.
+- Provider conversation reconstruction admits only persisted `user.message`, `assistant.message` (including structured Tool Calls), and paired terminal `tool.completed`, `tool.failed`, or `tool.interrupted` messages. Proposed, validated, started, model, permission, configuration, Plan, manifest, compaction, recovery, lifecycle, and unknown events remain audit/projection data and never become synthetic user messages.
+- A terminal Tool Result appears exactly once and retains its matching Tool Call pairing. Context Manifests record exact non-secret source identity, sequence or range, event type, and projection category for model-visible Session-derived messages; they never copy event payloads, prompts, Artifact bodies, or credentials. Summary, Plan, Recovery State, Tool Results, Artifacts, and repository text are data, and host authorization never depends on prompt wording.
+- These remediation changes are compatibility-preserving: the existing Session Event schema and names, Provider-neutral message roles, Permission Policy semantics, exact Session grant key, persistence ordering, cancellation, interruption classification, compaction boundaries, and Resume invariants remain the source contract. Later remediation slices may change presentation and message selection only at their existing application seams.
 
 ### Tool contracts
 
@@ -136,11 +146,11 @@ The product is an independent learning project. It adopts publicly described age
 
 ### Context assembly and compaction
 
-- Context Frame authority layers are: non-overridable safety policy; core behavior and Permission Policy; structured Tool Definitions; effective `AGENTS.md`; Session summary/Plan/recovery state; selected post-boundary messages and Tool events; current user message.
+- Context Frame authority layers are: non-overridable safety policy; core behavior and Permission Policy; structured Tool Definitions; effective `AGENTS.md`; Session summary/Plan/recovery state; selected typed post-boundary messages and paired terminal Tool Results; current user message.
 - Later or lower-trust content cannot override higher safety. Ordinary repository content, Tool Results, Artifacts, and summaries never gain instruction authority.
 - Load the Workspace-root `AGENTS.md`, then path-specific files from root toward each Tool target. Nearer files refine ordinary conventions. Conflicting multi-target rules block automatic execution. Never load instructions outside the Workspace.
 - A single `AGENTS.md` defaults to 32 KiB and the chain to 128 KiB. Oversize or unreadable instructions warn and block relevant automatic work rather than being silently truncated.
-- Derive a fresh Context Frame for every request. Preserve Tool Call/result pairing and unfinished lifecycle state; include previews instead of large bodies.
+- Derive a fresh Context Frame for every request. Preserve Tool Call/result pairing and use only typed message allowlists for provider content; keep unfinished lifecycle state available for audit, compaction, and recovery without rendering it as a synthetic message. Include previews instead of large bodies.
 - Reserve response capacity before each request. Normally reserve the larger of 16,000 tokens or 20 percent of the context window, capped at 30 percent for small windows. Trigger compaction before exceeding the remainder.
 - First micro-compact superseded state and large Tool Results. If insufficient, generate a validated structured Context Summary with objective, constraints, decisions, Plan, files, commands/results, failures, unresolved work, next actions, and references.
 - A Summary Boundary records coverage. Active context is the latest valid summary plus relevant later events. Never delete original events or claim hidden reasoning was preserved.
@@ -151,8 +161,8 @@ The product is an independent learning project. It adopts publicly described age
 - Ordinary precedence is built-in default, user TOML, project TOML, environment, CLI, then explicit Session override.
 - Safety ceilings cannot be relaxed. Project configuration cannot set credentials or Provider Base URL. API Key comes only from `MINI_AGENT_API_KEY`; Base URL may come from user config, environment, or CLI.
 - Strictly validate every existing TOML source; unknown keys and invalid types fail with source information. Effective Configuration is immutable and tracks each field's provenance and applied safety cap.
-- Session overrides are allowlisted, recorded as non-secret events, and begin with the next operation. Less restrictive permission changes require explicit confirmation. API Key, Base URL, Workspace, and Session storage cannot change in an active Session.
-- Record a Context Manifest for each request with layer sources/hashes/token estimates, instruction hashes, configuration hash, non-secret request parameters, Summary Boundary, and included event range. Do not duplicate complete prompts or secrets.
+- Session overrides are allowlisted, recorded as non-secret events, and begin with the next operation. Less restrictive permission changes require explicit confirmation. `plan_mode` is runtime-only and may be changed only by an explicit one-shot or interactive action; it cannot come from TOML or environment sources. API Key, Base URL, Workspace, and Session storage cannot change in an active Session.
+- Record a Context Manifest for each request with layer sources/hashes/token estimates, instruction hashes, configuration hash, non-secret request parameters, Summary Boundary, included event range, and exact provenance for model-visible Session-derived messages. Do not duplicate complete prompts, event payloads, Artifact bodies, or secrets.
 - Keep the versioned core prompt small: Agent responsibility, Workspace, Loop completion, structured Tool use, permission obedience, honest verification, recovery, Plans, final reports, and no hidden chain-of-thought persistence. Enforceable host rules stay in code.
 
 ### Failure, retry, cancellation, and recovery
@@ -168,10 +178,11 @@ The product is an independent learning project. It adopts publicly described age
 
 ### CLI interaction
 
-- Present a minimal conversational transcript with user input, streamed Agent text, and concise Tool activity. Internal phase names and diagnostic action menus are not production UI.
-- The supported command surface is the default interactive Agent command plus `init`, `sessions`, `resume`, `config show`, and `doctor`; `--workspace`, `--model`, `--permission-mode`, `--version`, and `--help` cover startup selection and diagnostics. In-session `/config` changes use the previously defined allowlist.
-- Use transient status such as Thinking or Reading and collapse it after completion. Hide context numbers until pressure, compaction, or diagnostics make them relevant.
-- Display Plan updates only for complex work. Interrupt streaming with a focused permission block only when a decision is needed, then collapse it into an audit line.
+- Present the selected left-rail conversation-block transcript with user input, streamed Agent text, and concise Tool activity. Internal phase names and diagnostic action menus are not production UI. Supporting activity is attached to the originating Agent block and never rendered as a new user message.
+- The supported command surface is the default interactive Agent command plus `init`, `sessions`, `resume`, `config show`, and `doctor`; `--workspace`, `--model`, `--permission-mode`, `--version`, and `--help` cover startup selection and diagnostics. In-session `/config` changes use the previously defined allowlist; `/plan on` and `/plan off` are explicit runtime controls for the next operation.
+- Use transient status such as Thinking or Reading and collapse it after completion. The trailing status area may show context usage and slash-command hints; it scrolls with the transcript and has no pinned or cursor-dependent meaning.
+- Display only the latest live Plan when Plan Mode is enabled and the complexity gate creates one. Clear it when complete, and never replay historical Plan snapshots as current UI.
+- Interrupt streaming with a focused permission block only when a decision is needed. Show the four numeric choices and collapse the result into an audit line.
 - Keep errors, instruction changes, uncertain side effects, and recovery choices prominent. Session listing is a dedicated command view.
 - Non-interactive output is stable plain text without dynamic color. A required confirmation without interactive input denies safely.
 
@@ -210,7 +221,7 @@ The product is an independent learning project. It adopts publicly described age
 ### Test seams and philosophy
 
 - Test observable domain and application behavior at the highest stable seam. Do not assert private method calls or broad ANSI snapshots.
-- Use a scripted Fake Model Provider that emits text, Tool Calls, normal stops, partial streams, transient failures, illegal events, and usage while capturing each Context Frame.
+- Use a scripted Fake Model Provider that emits text, Tool Calls, normal stops, partial streams, transient failures, illegal events, and usage while capturing each Context Frame. The shared CLI acceptance seam must run against a real temporary JSONL Session Store and expose rendered plain output, captured Context Frames, durable Session Events, and persisted Context Manifest metadata through public APIs rather than private-method assertions.
 - Use an in-memory Session Store for exact transition tests and the real JSONL adapter in temporary directories for persistence, locking, tail repair, Artifact, and Resume integration tests.
 - Use temporary real Workspaces for path and filesystem behavior, scripted User Interaction for confirmations/cancellation, and deterministic Clock/ID Generator values.
 - Run shared contract suites against fakes and real adapters so tests cannot pass with a fake that violates production semantics.
@@ -221,6 +232,7 @@ The product is an independent learning project. It adopts publicly described age
 - Contract tests cover normalized Provider streams, Tool schemas/results, Session Events and migrations, Compactor schema/boundaries, and Application Port parity.
 - Integration tests cover cross-platform paths and links, bounded Tools, Patch rollback, Shell cancellation, process trees, JSONL/fsync ordering, locks, corruption recovery, Artifacts, instruction discovery, compaction, and Resume reconciliation.
 - A small CLI integration suite covers task entry, streaming, permission allow/deny, Plan update, cancellation, recoverable error, compaction, completion, Session list, and Resume using semantic assertions.
+- The remediation acceptance baseline marks automatic Plan creation, word-based terminal confirmation, flat transcript formatting, and raw lifecycle-event-as-user-message reconstruction as superseded contracts. Their replacement checks are owned by the explicit Plan Mode, numeric confirmation, grouped transcript, and typed Context Frame slices; no test may preserve both production protocols as simultaneous expectations.
 - Do not set an arbitrary coverage percentage. Every permission, confinement, durable-state, terminal-state, and interruption branch is mandatory.
 
 ### CI matrix
@@ -245,6 +257,7 @@ The product is an independent learning project. It adopts publicly described age
 | Cancellation | First interrupt acknowledges and cleans up; uncertain Tools become interrupted; forced second interrupt exits 130; no new work is scheduled. |
 | Failure handling | Retryable categories respect budget/backoff; non-retryable and persistence failures stop correctly; errors are redacted and correlated. |
 | CLI UX | Production view omits diagnostic Phase/Actions, prompts only for real decisions, and reports completion, errors, compaction, and recovery clearly. |
+| Conversational remediation | A real temporary-Session Fake Provider journey observes grouped plain output, explicit Plan Mode, numeric permission choices, typed Context Frames, durable events, and exact non-secret Context Manifest provenance; superseded automatic/word/flat/raw-event expectations are not treated as current behavior. |
 | Configuration | Strict source validation, provenance, precedence, safety ceilings, environment-only key, and Session override lifecycle are tested. |
 | Packaging | Wheel contents exclude scratch/runtime data/secrets, include typing/resources/license, and sdist rebuilds without Git metadata. |
 
