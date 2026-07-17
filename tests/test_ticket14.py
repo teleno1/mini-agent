@@ -153,8 +153,8 @@ def test_production_cli_streams_text_and_reports_completion_without_dashboard(
     result = runner.invoke(fake_app, ["--workspace", str(tmp_path), "explain this"])
 
     assert result.exit_code == 0
-    assert "You: explain this" in result.stdout
-    assert "Agent: Mini Agent is a small, inspectable coding agent." in result.stdout
+    assert "+ You\n|   > explain this" in result.stdout
+    assert "| Agent\n|   > Mini Agent is a small, inspectable coding agent." in result.stdout
     assert "Completed" in result.stdout
     assert "Outcome:" in result.stdout
     assert "Verification:" in result.stdout
@@ -166,7 +166,10 @@ def test_production_cli_streams_text_and_reports_completion_without_dashboard(
     assert "context_window_tokens" not in result.stdout
 
 
-def test_cli_exposes_init_and_config_views_without_credentials(tmp_path: Path) -> None:
+def test_cli_exposes_init_and_config_views_without_credentials(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("MINI_AGENT_API_KEY", raising=False)
     initialized = runner.invoke(app, ["init", "--yes", "--workspace", str(tmp_path)])
 
     assert initialized.exit_code == 0
@@ -194,7 +197,7 @@ def test_cli_streams_tool_activity_and_denies_write_without_interactive_input(
     read = runner.invoke(read_app, ["--workspace", str(tmp_path), "read README"])
 
     assert read.exit_code == 0
-    assert "read_file (README.md) - completed" in read.stdout
+    assert "[TOOL RESULT] read_file (README.md) - completed" in read.stdout
     assert "Permission needed" not in read.stdout
 
     denied_app = _use_provider(
@@ -216,7 +219,7 @@ def test_cli_streams_tool_activity_and_denies_write_without_interactive_input(
     assert denied.exit_code == 0
     assert "Permission needed" not in denied.stdout
     assert "Choose [" not in denied.stdout
-    assert "create_file (new.txt) - denied" in denied.stdout
+    assert "[TOOL RESULT] create_file (new.txt) - denied" in denied.stdout
     assert not (tmp_path / "new.txt").exists()
 
 
@@ -244,10 +247,9 @@ def test_cli_renders_complex_plan_and_compaction_as_semantic_lines(tmp_path: Pat
     )
 
     assert planned.exit_code == 0
-    assert "Plan:" in planned.stdout
-    assert "Inspect the relevant repository code" in planned.stdout
-    assert "read_file (one.txt) - completed" in planned.stdout
-    assert "read_file (two.txt) - completed" in planned.stdout
+    assert "Plan (live)" in planned.stdout
+    assert "[TOOL RESULT] read_file (one.txt) - completed" in planned.stdout
+    assert "[TOOL RESULT] read_file (two.txt) - completed" in planned.stdout
     planned_session = SessionStore(tmp_path).list_sessions()[0]
     plan_configuration = next(
         event
@@ -314,7 +316,7 @@ def test_cli_shows_provider_retry_progress(tmp_path: Path) -> None:
 
     assert result.exit_code == 0
     assert "Provider retry 2/3" in result.stdout
-    assert "Agent: Recovered." in result.stdout
+    assert "|   > Recovered." in result.stdout
 
 
 def test_cli_acknowledges_cancellation_without_reporting_completion(

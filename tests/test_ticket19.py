@@ -108,9 +108,9 @@ def test_cli_renders_unavailable_verification_and_unsuccessful_shell_observation
 
     rendered = "".join(output)
     verification_line = next(
-        line for line in rendered.splitlines() if line.strip().startswith("Verification:")
+        line for line in rendered.splitlines() if "Verification:" in line
     )
-    assert verification_line.strip() == "Verification: unavailable"
+    assert verification_line.strip() == "|     Verification: unavailable"
     assert "Unresolved work:" in rendered
     assert "interrupted (timeout)" in rendered
     assert "Verification is unavailable" in rendered
@@ -133,10 +133,10 @@ def test_cli_renders_successful_verification_separately_from_failed_retry() -> N
 
     rendered = "".join(output)
     verification_line = next(
-        line for line in rendered.splitlines() if line.strip().startswith("Verification:")
+        line for line in rendered.splitlines() if "Verification:" in line
     )
     unresolved_line = next(
-        line for line in rendered.splitlines() if line.strip().startswith("Unresolved work:")
+        line for line in rendered.splitlines() if "Unresolved work:" in line
     )
-    assert verification_line.strip() == "Verification: pytest -q"
+    assert verification_line.strip() == "|     Verification: pytest -q"
     assert "failed (exit-code)" in unresolved_line

@@ -124,4 +124,4 @@ def test_explicit_fake_composition_supports_interactive_and_resume_without_netwo
         ["resume", session_id, "continue task", "--workspace", str(tmp_path)],
     )
     assert resumed.exit_code == 0
-    assert "Agent: Mini Agent is a small, inspectable coding agent." in _output(resumed)
+    assert "| Agent\n|   > Mini Agent is a small, inspectable coding agent." in _output(resumed)

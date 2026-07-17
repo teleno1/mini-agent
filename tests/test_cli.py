@@ -27,8 +27,8 @@ def test_cli_renders_a_minimal_conversational_fake_turn() -> None:
     result = runner.invoke(fake_app, ["Explain Mini Agent"])
 
     assert result.exit_code == 0
-    assert "You: Explain Mini Agent" in result.stdout
-    assert "Agent: Mini Agent is a small, inspectable coding agent." in result.stdout
+    assert "+ You\n|   > Explain Mini Agent" in result.stdout
+    assert "| Agent\n|   > Mini Agent is a small, inspectable coding agent." in result.stdout
     assert "Phase" not in result.stdout
     assert "Actions" not in result.stdout
 
@@ -37,7 +37,7 @@ def test_cli_renders_user_markup_as_literal_text() -> None:
     result = runner.invoke(fake_app, ["Show [bold]literal[/bold] text"])
 
     assert result.exit_code == 0
-    assert "You: Show [bold]literal[/bold] text" in result.stdout
+    assert "|   > Show [bold]literal[/bold] text" in result.stdout
 
 
 def test_cli_lists_and_resumes_a_durable_session(monkeypatch, tmp_path) -> None:
@@ -53,4 +53,4 @@ def test_cli_lists_and_resumes_a_durable_session(monkeypatch, tmp_path) -> None:
     resumed = runner.invoke(fake_app, ["resume", session_id, "continue this"])
 
     assert resumed.exit_code == 0
-    assert "Agent: Mini Agent is a small, inspectable coding agent." in resumed.stdout
+    assert "| Agent\n|   > Mini Agent is a small, inspectable coding agent." in resumed.stdout

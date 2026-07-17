@@ -16,8 +16,8 @@ def test_fake_cli_journey_exposes_public_context_and_durable_evidence(tmp_path) 
     journey = run_fake_cli_journey(tmp_path, task)
 
     assert journey.exit_code == 0
-    assert f"You: {task}" in journey.output
-    assert "Agent: Mini Agent is a small, inspectable coding agent." in journey.output
+    assert f"|   > {task}" in journey.output
+    assert "|   > Mini Agent is a small, inspectable coding agent." in journey.output
     assert journey.context_frames
     assert journey.context_frames[0].manifest.request_id
     assert [event.event_type for event in journey.events] == [

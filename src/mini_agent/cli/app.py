@@ -344,7 +344,7 @@ async def _run_turn(
                 )
                 return TurnRunOutcome(selected_session, configuration_error=True)
         try:
-            application, provider, _resolver, _configuration, diagnostics = _build_application(
+            application, provider, _resolver, configuration, diagnostics = _build_application(
                 workspace,
                 store,
                 cli_values=values,
@@ -353,6 +353,7 @@ async def _run_turn(
                 permission_gate=gate,
                 provider_factory=provider_factory,
             )
+            presenter.set_context_window(configuration.context_window_tokens)
         except ConfigurationError as exc:
             _report_configuration_failure(
                 workspace,
@@ -465,9 +466,12 @@ def _display_sessions(workspace: Path) -> None:
         typer.echo(f"{session.session_id}\t{session.status}\t{preview}")
 
 
-def _safe_prompt(prompt: str) -> str | None:
+def _safe_prompt(prompt: str | None) -> str | None:
     try:
-        value = typer.prompt(prompt)
+        if prompt:
+            value = typer.prompt(prompt, prompt_suffix="")
+        else:
+            value = typer.prompt("", prompt_suffix="")
     except (Abort, EOFError, OSError):
         return None
     return value.strip() or None
@@ -522,7 +526,7 @@ async def _retry_interrupted_cli(
     gate.interaction = interaction
     provider: ModelProvider | None = None
     try:
-        application, provider, _resolver, _configuration, diagnostics = _build_application(
+        application, provider, _resolver, configuration, diagnostics = _build_application(
             workspace,
             store,
             cli_values=cli_values,
@@ -531,6 +535,7 @@ async def _retry_interrupted_cli(
             permission_gate=gate,
             provider_factory=provider_factory,
         )
+        presenter.set_context_window(configuration.context_window_tokens)
         result = await application.retry_interrupted(session_id)
         presenter.recovery(
             "Recovery retry recorded as new Tool calls; no model completion was assumed."
@@ -699,7 +704,7 @@ def _interactive_loop(
     interactive = _is_terminal_input()
     typer.echo("Mini Agent interactive Session. Type /help or /exit.")
     while True:
-        task = _safe_prompt("You")
+        task = _safe_prompt(None)
         if task is None:
             typer.echo("Session ended.")
             return
@@ -735,7 +740,7 @@ def _interactive_loop(
                 cli_values=cli_values,
                 permission_gate=gate,
                 interactive=interactive,
-                user_already_rendered=True,
+                user_already_rendered=False,
                 provider_factory=provider_factory,
             )
         )
@@ -887,9 +892,8 @@ def resume_session(
                         "Interrupted work was abandoned; its uncertain result remains in history."
                     )
                 break
-        prompted_task = task is None
         if task is None:
-            task = _safe_prompt("You")
+            task = _safe_prompt(None)
         if task is None:
             return
         turn_outcome = asyncio.run(
@@ -901,7 +905,7 @@ def resume_session(
                 cli_values=values,
                 permission_gate=gate,
                 interactive=_is_terminal_input(),
-                user_already_rendered=prompted_task,
+                user_already_rendered=False,
                 provider_factory=provider_factory,
             )
         )
