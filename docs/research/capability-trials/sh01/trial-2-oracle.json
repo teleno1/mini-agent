@@ -1,0 +1,68 @@
+{
+  "oracle": "sh01-v1",
+  "expected": {
+    "denied_only": {
+      "verification": [
+        "unavailable"
+      ],
+      "unresolved_count": 1
+    },
+    "failed_then_success": {
+      "verification": [
+        "pytest -q"
+      ],
+      "unresolved_count": 1,
+      "unresolved_contains_failed": true
+    },
+    "success_only": {
+      "verification": [
+        "python -m pytest -q"
+      ],
+      "unresolved_count": 0
+    }
+  },
+  "actual": {
+    "denied_only": {
+      "outcome": "completed-with-unresolved-work",
+      "verification": [
+        "pytest -q denied"
+      ],
+      "changed_files": [],
+      "unresolved_work": [
+        "Shell command 'pytest -q denied' (Tool Call oracle-denied) ended with denied (permission)"
+      ],
+      "next_action": "Resolve the reported Tool observations and rerun verification."
+    },
+    "failed_then_success": {
+      "outcome": "completed-with-unresolved-work",
+      "verification": [
+        "pytest -q",
+        "pytest -q"
+      ],
+      "changed_files": [],
+      "unresolved_work": [
+        "Shell command 'pytest -q' (Tool Call oracle-failed) ended with failed (exit-code)"
+      ],
+      "next_action": "Resolve the reported Tool observations and rerun verification."
+    },
+    "success_only": {
+      "outcome": "completed",
+      "verification": [
+        "python -m pytest -q"
+      ],
+      "changed_files": [],
+      "unresolved_work": [],
+      "next_action": "No further action is required."
+    }
+  },
+  "checks": {
+    "denied_only": false,
+    "failed_then_success": false,
+    "success_only": true,
+    "scope": true
+  },
+  "passed": false,
+  "changed_files": [
+    "src/mini_agent/application/agent.py"
+  ]
+}

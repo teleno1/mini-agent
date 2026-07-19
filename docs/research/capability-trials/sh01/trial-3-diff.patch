@@ -1,0 +1,13 @@
+﻿diff --git a/src/mini_agent/application/agent.py b/src/mini_agent/application/agent.py
+index b650c61..0dd72c2 100644
+--- a/src/mini_agent/application/agent.py
++++ b/src/mini_agent/application/agent.py
+@@ -1849,7 +1849,7 @@ def build_completion_report(
+         raw_changed = result.data.get("changed_files", [])
+         if call.name in changed_tools and isinstance(raw_changed, list):
+             changed_files.update(item for item in raw_changed if isinstance(item, str))
+-        if call.name == "shell" and result.outcome is ToolOutcome.SUCCESS:
++        if call.name == "shell":
+             command = _shell_command(call)
+             if command is not None:
+                 verification.append(command)
