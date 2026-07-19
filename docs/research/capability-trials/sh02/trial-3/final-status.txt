@@ -1,0 +1,3 @@
+﻿ M src/mini_agent/context.py
+?? .scratch-sh02-oracle.json
+?? .scratch-sh02-trial-3-cli.txt
