@@ -1,0 +1,796 @@
+{
+  "trial": "trial-3",
+  "harness": "rl02-v1",
+  "provider_condition": "deterministic controlled provider; no network",
+  "cases": {
+    "provider_interruption": {
+      "case": "provider-interruption",
+      "session_id": "session-0001",
+      "raised": "StreamFailed",
+      "output_complete": false,
+      "rendered_observation": [
+        "response-started",
+        "partial Provider output",
+        "response-failed"
+      ],
+      "events": [
+        {
+          "schema_version": 1,
+          "event_id": "event-0001",
+          "sequence": 1,
+          "session_id": "session-0001",
+          "event_type": "session.created",
+          "timestamp": "2026-07-19T00:00:00+00:00",
+          "turn_id": null,
+          "causation_id": null,
+          "payload": {
+            "status": "idle"
+          }
+        },
+        {
+          "schema_version": 1,
+          "event_id": "event-0002",
+          "sequence": 2,
+          "session_id": "session-0001",
+          "event_type": "turn.started",
+          "timestamp": "2026-07-19T00:00:00+00:00",
+          "turn_id": "turn-0001",
+          "causation_id": null,
+          "payload": {}
+        },
+        {
+          "schema_version": 1,
+          "event_id": "event-0003",
+          "sequence": 3,
+          "session_id": "session-0001",
+          "event_type": "user.message",
+          "timestamp": "2026-07-19T00:00:00+00:00",
+          "turn_id": "turn-0001",
+          "causation_id": "event-0002",
+          "payload": {
+            "content": "record the interrupted Provider response",
+            "role": "user"
+          }
+        },
+        {
+          "schema_version": 1,
+          "event_id": "event-0004",
+          "sequence": 4,
+          "session_id": "session-0001",
+          "event_type": "model.request.started",
+          "timestamp": "2026-07-19T00:00:00.000002+00:00",
+          "turn_id": "turn-0001",
+          "causation_id": "event-0003",
+          "payload": {
+            "message_count": 1,
+            "request_id": "request-0001"
+          }
+        },
+        {
+          "schema_version": 1,
+          "event_id": "event-0005",
+          "sequence": 5,
+          "session_id": "session-0001",
+          "event_type": "model.request.failed",
+          "timestamp": "2026-07-19T00:00:00.000006+00:00",
+          "turn_id": "turn-0001",
+          "causation_id": "event-0004",
+          "payload": {
+            "category": "network",
+            "cause": null,
+            "code": "controlled-interruption",
+            "description": "controlled Provider interruption",
+            "details": {},
+            "error_id": "failure-0001",
+            "failure_id": "failure-0001",
+            "request_id": "request-0001",
+            "required_user_action": "inspect the incomplete Turn and retry later",
+            "retry_after_seconds": null,
+            "retryable": false,
+            "session_id": "session-0001",
+            "source": "provider",
+            "tool_call_id": null,
+            "turn_id": "turn-0001"
+          }
+        },
+        {
+          "schema_version": 1,
+          "event_id": "event-0006",
+          "sequence": 6,
+          "session_id": "session-0001",
+          "event_type": "turn.failed",
+          "timestamp": "2026-07-19T00:00:00.000007+00:00",
+          "turn_id": "turn-0001",
+          "causation_id": null,
+          "payload": {
+            "category": "network",
+            "cause": null,
+            "code": "controlled-interruption",
+            "description": "controlled Provider interruption",
+            "details": {},
+            "error_id": "failure-0001",
+            "failure_id": "failure-0001",
+            "outcome": "failed",
+            "request_id": "request-0001",
+            "required_user_action": "inspect the incomplete Turn and retry later",
+            "retry_after_seconds": null,
+            "retryable": false,
+            "session_id": "session-0001",
+            "source": "provider",
+            "tool_call_id": null,
+            "turn_id": "turn-0001"
+          }
+        }
+      ],
+      "checks": {
+        "provider_request_failed": true,
+        "turn_failed": true,
+        "no_assistant_message": true,
+        "partial_output_not_complete": true,
+        "terminal_event_last": true
+      },
+      "passed": true
+    },
+    "stream_cancellation": {
+      "case": "stream-cancellation",
+      "session_id": "session-0001",
+      "raised": "CancelledError",
+      "output_complete": false,
+      "rendered_observation": [
+        "response-started",
+        "partial cancellation output"
+      ],
+      "events": [
+        {
+          "schema_version": 1,
+          "event_id": "event-0001",
+          "sequence": 1,
+          "session_id": "session-0001",
+          "event_type": "session.created",
+          "timestamp": "2026-07-19T00:00:00+00:00",
+          "turn_id": null,
+          "causation_id": null,
+          "payload": {
+            "status": "idle"
+          }
+        },
+        {
+          "schema_version": 1,
+          "event_id": "event-0002",
+          "sequence": 2,
+          "session_id": "session-0001",
+          "event_type": "turn.started",
+          "timestamp": "2026-07-19T00:00:00+00:00",
+          "turn_id": "turn-0001",
+          "causation_id": null,
+          "payload": {}
+        },
+        {
+          "schema_version": 1,
+          "event_id": "event-0003",
+          "sequence": 3,
+          "session_id": "session-0001",
+          "event_type": "user.message",
+          "timestamp": "2026-07-19T00:00:00+00:00",
+          "turn_id": "turn-0001",
+          "causation_id": "event-0002",
+          "payload": {
+            "content": "cancel while the Provider is streaming",
+            "role": "user"
+          }
+        },
+        {
+          "schema_version": 1,
+          "event_id": "event-0004",
+          "sequence": 4,
+          "session_id": "session-0001",
+          "event_type": "model.request.started",
+          "timestamp": "2026-07-19T00:00:00.000002+00:00",
+          "turn_id": "turn-0001",
+          "causation_id": "event-0003",
+          "payload": {
+            "message_count": 1,
+            "request_id": "request-0001"
+          }
+        },
+        {
+          "schema_version": 1,
+          "event_id": "event-0005",
+          "sequence": 5,
+          "session_id": "session-0001",
+          "event_type": "model.request.failed",
+          "timestamp": "2026-07-19T00:00:00.000005+00:00",
+          "turn_id": "turn-0001",
+          "causation_id": "event-0004",
+          "payload": {
+            "category": "cancellation",
+            "cause": null,
+            "code": "turn-cancelled",
+            "description": "the active Turn was cancelled before it could complete",
+            "details": {},
+            "error_id": "failure-0001",
+            "failure_id": "failure-0001",
+            "request_id": "request-0001",
+            "required_user_action": "inspect the Session before starting another Turn",
+            "retry_after_seconds": null,
+            "retryable": false,
+            "session_id": "session-0001",
+            "source": "application",
+            "tool_call_id": null,
+            "turn_id": "turn-0001"
+          }
+        },
+        {
+          "schema_version": 1,
+          "event_id": "event-0006",
+          "sequence": 6,
+          "session_id": "session-0001",
+          "event_type": "turn.failed",
+          "timestamp": "2026-07-19T00:00:00.000006+00:00",
+          "turn_id": "turn-0001",
+          "causation_id": null,
+          "payload": {
+            "category": "cancellation",
+            "cause": null,
+            "code": "turn-cancelled",
+            "description": "the active Turn was cancelled before it could complete",
+            "details": {},
+            "error_id": "failure-0001",
+            "failure_id": "failure-0001",
+            "outcome": "failed",
+            "request_id": "request-0001",
+            "required_user_action": "inspect the Session before starting another Turn",
+            "retry_after_seconds": null,
+            "retryable": false,
+            "session_id": "session-0001",
+            "source": "application",
+            "tool_call_id": null,
+            "turn_id": "turn-0001"
+          }
+        }
+      ],
+      "checks": {
+        "provider_request_failed": true,
+        "turn_failed": true,
+        "cancellation_category": true,
+        "partial_output_not_complete": true,
+        "terminal_event_last": true
+      },
+      "passed": true
+    },
+    "resume_recovery": {
+      "case": "started-tool-resume",
+      "session_id": "session-0001",
+      "inspection": {
+        "session_id": "session-0001",
+        "interrupted_tools": [
+          {
+            "tool_call_id": "call-interrupted",
+            "name": "shell",
+            "arguments": {
+              "command": "python -c \"print(1)\"",
+              "working_directory": "."
+            },
+            "kind": "shell",
+            "evidence": {
+              "arguments": {
+                "command": "python -c \"print(1)\"",
+                "working_directory": "."
+              },
+              "captured_preview": {
+                "content": "resume evidence"
+              },
+              "process_evidence": {
+                "pid": 2147483647,
+                "state": "running",
+                "alive": false
+              },
+              "state": "running",
+              "tool_call_id": "call-interrupted",
+              "tool_name": "shell",
+              "note": "Process and output evidence cannot prove that an uncertain Shell call succeeded."
+            }
+          }
+        ],
+        "open_request_ids": [],
+        "previous_instruction_hashes": [],
+        "current_instruction_hashes": [],
+        "instruction_change": false,
+        "blocked_reason": null
+      },
+      "retry": {
+        "old_tool_call_ids": [
+          "call-interrupted"
+        ],
+        "new_tool_call_ids": [
+          "tool-0001"
+        ],
+        "outcomes": [
+          "success"
+        ]
+      },
+      "recovered_projection": {
+        "status": "failed",
+        "resumable": true,
+        "current_turn": false
+      },
+      "events": [
+        {
+          "schema_version": 1,
+          "event_id": "event-0001",
+          "sequence": 1,
+          "session_id": "session-0001",
+          "event_type": "session.created",
+          "timestamp": "2026-07-19T00:00:00+00:00",
+          "turn_id": null,
+          "causation_id": null,
+          "payload": {
+            "status": "idle"
+          }
+        },
+        {
+          "schema_version": 1,
+          "event_id": "event-0002",
+          "sequence": 2,
+          "session_id": "session-0001",
+          "event_type": "turn.started",
+          "timestamp": "2026-07-19T00:00:00.000001+00:00",
+          "turn_id": "turn-original",
+          "causation_id": null,
+          "payload": {}
+        },
+        {
+          "schema_version": 1,
+          "event_id": "event-0003",
+          "sequence": 3,
+          "session_id": "session-0001",
+          "event_type": "user.message",
+          "timestamp": "2026-07-19T00:00:00.000002+00:00",
+          "turn_id": "turn-original",
+          "causation_id": "event-0002",
+          "payload": {
+            "content": "recover the interrupted Tool",
+            "role": "user"
+          }
+        },
+        {
+          "schema_version": 1,
+          "event_id": "event-0004",
+          "sequence": 4,
+          "session_id": "session-0001",
+          "event_type": "model.request.started",
+          "timestamp": "2026-07-19T00:00:00.000003+00:00",
+          "turn_id": "turn-original",
+          "causation_id": "event-0003",
+          "payload": {
+            "message_count": 1,
+            "request_id": "request-original"
+          }
+        },
+        {
+          "schema_version": 1,
+          "event_id": "event-0005",
+          "sequence": 5,
+          "session_id": "session-0001",
+          "event_type": "model.request.completed",
+          "timestamp": "2026-07-19T00:00:00.000004+00:00",
+          "turn_id": "turn-original",
+          "causation_id": "event-0004",
+          "payload": {
+            "input_tokens": 1,
+            "output_tokens": 1,
+            "request_id": "request-original"
+          }
+        },
+        {
+          "schema_version": 1,
+          "event_id": "event-0006",
+          "sequence": 6,
+          "session_id": "session-0001",
+          "event_type": "assistant.message",
+          "timestamp": "2026-07-19T00:00:00.000005+00:00",
+          "turn_id": "turn-original",
+          "causation_id": "event-0005",
+          "payload": {
+            "content": "",
+            "tool_calls": [
+              {
+                "arguments": {
+                  "command": "python -c \"print(1)\"",
+                  "working_directory": "."
+                },
+                "name": "shell",
+                "tool_call_id": "call-interrupted"
+              }
+            ]
+          }
+        },
+        {
+          "schema_version": 1,
+          "event_id": "event-0007",
+          "sequence": 7,
+          "session_id": "session-0001",
+          "event_type": "tool.proposed",
+          "timestamp": "2026-07-19T00:00:00.000006+00:00",
+          "turn_id": "turn-original",
+          "causation_id": "event-0006",
+          "payload": {
+            "arguments": {
+              "command": "python -c \"print(1)\"",
+              "working_directory": "."
+            },
+            "name": "shell",
+            "tool_call_id": "call-interrupted"
+          }
+        },
+        {
+          "schema_version": 1,
+          "event_id": "event-0008",
+          "sequence": 8,
+          "session_id": "session-0001",
+          "event_type": "tool.validated",
+          "timestamp": "2026-07-19T00:00:00.000007+00:00",
+          "turn_id": "turn-original",
+          "causation_id": "event-0007",
+          "payload": {
+            "arguments": {
+              "command": "python -c \"print(1)\"",
+              "working_directory": "."
+            },
+            "name": "shell",
+            "risk": {
+              "hazards": [],
+              "resources": [
+                "."
+              ],
+              "side_effect": "execute",
+              "summary": "run one controlled Shell command for recovery evidence"
+            },
+            "tool_call_id": "call-interrupted"
+          }
+        },
+        {
+          "schema_version": 1,
+          "event_id": "event-0009",
+          "sequence": 9,
+          "session_id": "session-0001",
+          "event_type": "tool.started",
+          "timestamp": "2026-07-19T00:00:00.000008+00:00",
+          "turn_id": "turn-original",
+          "causation_id": "event-0008",
+          "payload": {
+            "name": "shell",
+            "recovery": {
+              "arguments": {
+                "command": "python -c \"print(1)\"",
+                "working_directory": "."
+              }
+            },
+            "tool_call_id": "call-interrupted"
+          }
+        },
+        {
+          "schema_version": 1,
+          "event_id": "event-0010",
+          "sequence": 10,
+          "session_id": "session-0001",
+          "event_type": "resume.recovery.retried",
+          "timestamp": "2026-07-19T00:00:00.000009+00:00",
+          "turn_id": "turn-original",
+          "causation_id": null,
+          "payload": {
+            "choice": "retry",
+            "open_request_ids": [],
+            "tools": [
+              {
+                "arguments": {
+                  "command": "python -c \"print(1)\"",
+                  "working_directory": "."
+                },
+                "evidence": {
+                  "arguments": {
+                    "command": "python -c \"print(1)\"",
+                    "working_directory": "."
+                  },
+                  "captured_preview": {
+                    "content": "resume evidence"
+                  },
+                  "note": "Process and output evidence cannot prove that an uncertain Shell call succeeded.",
+                  "process_evidence": {
+                    "alive": false,
+                    "pid": 2147483647,
+                    "state": "running"
+                  },
+                  "state": "running",
+                  "tool_call_id": "call-interrupted",
+                  "tool_name": "shell"
+                },
+                "kind": "shell",
+                "name": "shell",
+                "tool_call_id": "call-interrupted"
+              }
+            ]
+          }
+        },
+        {
+          "schema_version": 1,
+          "event_id": "event-0011",
+          "sequence": 11,
+          "session_id": "session-0001",
+          "event_type": "tool.interrupted",
+          "timestamp": "2026-07-19T00:00:00.000010+00:00",
+          "turn_id": "turn-original",
+          "causation_id": "call-interrupted",
+          "payload": {
+            "name": "shell",
+            "outcome": "interrupted",
+            "recovery": {
+              "arguments": {
+                "command": "python -c \"print(1)\"",
+                "working_directory": "."
+              },
+              "evidence": {
+                "arguments": {
+                  "command": "python -c \"print(1)\"",
+                  "working_directory": "."
+                },
+                "captured_preview": {
+                  "content": "resume evidence"
+                },
+                "note": "Process and output evidence cannot prove that an uncertain Shell call succeeded.",
+                "process_evidence": {
+                  "alive": false,
+                  "pid": 2147483647,
+                  "state": "running"
+                },
+                "state": "running",
+                "tool_call_id": "call-interrupted",
+                "tool_name": "shell"
+              },
+              "kind": "shell",
+              "name": "shell",
+              "tool_call_id": "call-interrupted"
+            },
+            "result": {
+              "data": {
+                "confirmed_effect": false,
+                "recovery": {
+                  "arguments": {
+                    "command": "python -c \"print(1)\"",
+                    "working_directory": "."
+                  },
+                  "evidence": {
+                    "arguments": {
+                      "command": "python -c \"print(1)\"",
+                      "working_directory": "."
+                    },
+                    "captured_preview": {
+                      "content": "resume evidence"
+                    },
+                    "note": "Process and output evidence cannot prove that an uncertain Shell call succeeded.",
+                    "process_evidence": {
+                      "alive": false,
+                      "pid": 2147483647,
+                      "state": "running"
+                    },
+                    "state": "running",
+                    "tool_call_id": "call-interrupted",
+                    "tool_name": "shell"
+                  },
+                  "kind": "shell",
+                  "name": "shell",
+                  "tool_call_id": "call-interrupted"
+                }
+              },
+              "error": {
+                "category": "recovery",
+                "code": "uncertain-interruption",
+                "message": "Tool side effects were uncertain after process exit; no success was assumed"
+              },
+              "outcome": "interrupted",
+              "tool_call_id": "call-interrupted",
+              "tool_name": "shell"
+            },
+            "result_text": "{\"data\": {\"confirmed_effect\": false, \"recovery\": {\"arguments\": {\"command\": \"python -c \\\"print(1)\\\"\", \"working_directory\": \".\"}, \"evidence\": {\"arguments\": {\"command\": \"python -c \\\"print(1)\\\"\", \"working_directory\": \".\"}, \"captured_preview\": {\"content\": \"resume evidence\"}, \"note\": \"Process and output evidence cannot prove that an uncertain Shell call succeeded.\", \"process_evidence\": {\"alive\": false, \"pid\": 2147483647, \"state\": \"running\"}, \"state\": \"running\", \"tool_call_id\": \"call-interrupted\", \"tool_name\": \"shell\"}, \"kind\": \"shell\", \"name\": \"shell\", \"tool_call_id\": \"call-interrupted\"}}, \"error\": {\"category\": \"recovery\", \"code\": \"uncertain-interruption\", \"message\": \"Tool side effects were uncertain after process exit; no success was assumed\"}, \"outcome\": \"interrupted\", \"tool_call_id\": \"call-interrupted\", \"tool_name\": \"shell\"}",
+            "tool_call_id": "call-interrupted"
+          }
+        },
+        {
+          "schema_version": 1,
+          "event_id": "event-0012",
+          "sequence": 12,
+          "session_id": "session-0001",
+          "event_type": "turn.failed",
+          "timestamp": "2026-07-19T00:00:00.000011+00:00",
+          "turn_id": "turn-original",
+          "causation_id": null,
+          "payload": {
+            "choice": "retry",
+            "outcome": "interrupted-recovery",
+            "uncertain_tool_count": 1
+          }
+        },
+        {
+          "schema_version": 1,
+          "event_id": "event-0013",
+          "sequence": 13,
+          "session_id": "session-0001",
+          "event_type": "turn.started",
+          "timestamp": "2026-07-19T00:00:00+00:00",
+          "turn_id": "turn-0001",
+          "causation_id": null,
+          "payload": {}
+        },
+        {
+          "schema_version": 1,
+          "event_id": "event-0014",
+          "sequence": 14,
+          "session_id": "session-0001",
+          "event_type": "user.message",
+          "timestamp": "2026-07-19T00:00:00+00:00",
+          "turn_id": "turn-0001",
+          "causation_id": "event-0013",
+          "payload": {
+            "content": "Explicitly retry the interrupted Tool calls as new calls.",
+            "role": "user"
+          }
+        },
+        {
+          "schema_version": 1,
+          "event_id": "event-0015",
+          "sequence": 15,
+          "session_id": "session-0001",
+          "event_type": "tool.proposed",
+          "timestamp": "2026-07-19T00:00:00.000012+00:00",
+          "turn_id": "turn-0001",
+          "causation_id": "event-0014",
+          "payload": {
+            "arguments": {
+              "command": "python -c \"print(1)\"",
+              "working_directory": "."
+            },
+            "name": "shell",
+            "tool_call_id": "tool-0001"
+          }
+        },
+        {
+          "schema_version": 1,
+          "event_id": "event-0016",
+          "sequence": 16,
+          "session_id": "session-0001",
+          "event_type": "tool.validated",
+          "timestamp": "2026-07-19T00:00:00.000001+00:00",
+          "turn_id": "turn-0001",
+          "causation_id": "event-0015",
+          "payload": {
+            "arguments": {
+              "command": "python -c \"print(1)\"",
+              "max_output_bytes": 65536,
+              "timeout_seconds": 120.0,
+              "working_directory": "."
+            },
+            "name": "shell",
+            "permission": {
+              "argument_hash": "81da8b30727b1442e5c9b165576a95b473f9a2d041ab40a51b4517364aaa0a72",
+              "decision": "allow",
+              "matched_rule": "safe-read",
+              "mode": "suggest",
+              "reason": "safe Workspace read automatically authorized",
+              "resource_summary": [
+                "."
+              ],
+              "risk": {
+                "hazards": [
+                  "interpreter"
+                ],
+                "resources": [
+                  "."
+                ],
+                "side_effect": "execute",
+                "summary": "run python can execute model-selected program text in Workspace directory ."
+              },
+              "scope": "turn",
+              "timestamp": "2026-07-19T00:00:00.000001+00:00",
+              "tool_call_id": "tool-0001"
+            },
+            "risk": {
+              "hazards": [
+                "interpreter"
+              ],
+              "resources": [
+                "."
+              ],
+              "side_effect": "execute",
+              "summary": "run python can execute model-selected program text in Workspace directory ."
+            },
+            "tool_call_id": "tool-0001"
+          }
+        },
+        {
+          "schema_version": 1,
+          "event_id": "event-0017",
+          "sequence": 17,
+          "session_id": "session-0001",
+          "event_type": "tool.started",
+          "timestamp": "2026-07-19T00:00:00.000002+00:00",
+          "turn_id": "turn-0001",
+          "causation_id": "event-0016",
+          "payload": {
+            "name": "shell",
+            "recovery": {
+              "arguments": {
+                "command": "python -c \"print(1)\"",
+                "max_output_bytes": 65536,
+                "timeout_seconds": 120.0,
+                "working_directory": "."
+              },
+              "tool_name": "shell"
+            },
+            "tool_call_id": "tool-0001"
+          }
+        },
+        {
+          "schema_version": 1,
+          "event_id": "event-0018",
+          "sequence": 18,
+          "session_id": "session-0001",
+          "event_type": "tool.completed",
+          "timestamp": "2026-07-19T00:00:00.000003+00:00",
+          "turn_id": "turn-0001",
+          "causation_id": "event-0017",
+          "payload": {
+            "name": "shell",
+            "outcome": "success",
+            "result": {
+              "data": {
+                "duration_seconds": 0.375,
+                "exit_code": 0,
+                "output_bytes": 3,
+                "output_truncated": false,
+                "stderr": "",
+                "stderr_bytes": 0,
+                "stdout": "1\r\n",
+                "stdout_bytes": 3,
+                "termination": "completed",
+                "working_directory": "."
+              },
+              "error": null,
+              "outcome": "success",
+              "tool_call_id": "tool-0001",
+              "tool_name": "shell"
+            },
+            "result_text": "{\"duration_seconds\": 0.375, \"exit_code\": 0, \"output_bytes\": 3, \"output_truncated\": false, \"stderr\": \"\", \"stderr_bytes\": 0, \"stdout\": \"1\\r\\n\", \"stdout_bytes\": 3, \"termination\": \"completed\", \"working_directory\": \".\"}",
+            "tool_call_id": "tool-0001"
+          }
+        },
+        {
+          "schema_version": 1,
+          "event_id": "event-0019",
+          "sequence": 19,
+          "session_id": "session-0001",
+          "event_type": "turn.failed",
+          "timestamp": "2026-07-19T00:00:00.000004+00:00",
+          "turn_id": "turn-0001",
+          "causation_id": "event-0014",
+          "payload": {
+            "note": "Recovery retries do not invent a Provider response.",
+            "outcome": "recovery-retry",
+            "tool_call_count": 1
+          }
+        }
+      ],
+      "checks": {
+        "inspection_found_started_tool": true,
+        "inspection_has_process_evidence": true,
+        "old_call_closed_as_interrupted": true,
+        "retry_is_new_call": true,
+        "new_call_has_terminal_result": true,
+        "recovery_events_are_durable": true,
+        "workspace_state_preserved": true,
+        "no_original_replay": true
+      },
+      "passed": true
+    }
+  },
+  "passed": true
+}
