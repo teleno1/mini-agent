@@ -52,6 +52,14 @@ The host-controlled Tool that runs one bounded, non-interactive PowerShell or PO
 
 The pure, explainable classification of a proposed Shell command as a recognized local read/build/test operation or a confirmation-gated or denied hazard such as chaining, redirection, network access, installation, deletion, an interpreter, or an unknown executable.
 
+## Code-Work Command
+
+A command used to complete ordinary repository work inside the selected Workspace: testing, building, formatting, static analysis, dependency resolution, code generation, or read-only Git inspection. Full-Auto may run these commands automatically, including retrieval of declared dependencies. Deletion or overwrite operations, Git commits or pushes, publishing, credential access, arbitrary download-and-execute behavior, and any access outside the Workspace are not Code-Work Commands.
+
+## Full-Auto
+
+The Permission Policy mode that automatically authorizes Code-Work Commands while retaining the application's hard safety boundaries. It does not authorize operations outside the Code-Work Command definition.
+
 ## Tool Call
 
 A model-requested invocation of a named Tool with a unique identifier and proposed arguments. It has no authority to run until validation and the Permission Policy allow it.
