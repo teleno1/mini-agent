@@ -1,0 +1,25 @@
+﻿{
+    "trial":  "run-1",
+    "task_card":  "RL01",
+    "task_card_version":  "python-fixtures-v1/rl01-v1",
+    "mini_agent_commit":  "c0981821e6873cc74231d2798e9fcedde8670c62",
+    "fixture_commit":  "6f749dcc7298f3316af9f4a1730ad197e1b9946c",
+    "model_id":  "deepseek-v4-flash",
+    "base_url":  "https://api.deepseek.com/v1",
+    "permission_mode":  "auto-edit",
+    "plan_mode":  false,
+    "platform":  "win32",
+    "python":  "3.12.2",
+    "workspace":  "F:\\work\\project\\mini-agent\\.scratch\\trial20\\rl01\\run-1\\workspace",
+    "session_id":  "session-7e35c91b-126f-4c94-83a1-e79e7e9d9cdc",
+    "cli_exit":  1,
+    "oracle_exit":  0,
+    "oracle_passed":  true,
+    "changed_files":  [
+                          "src/reading_list/filters.py",
+                          "src/reading_list/formatting.py",
+                          "src/reading_list/store.py"
+                      ],
+    "oracle_sha256":  "3b92ea5ac415b4a7df6893c7fdeaa8507a3778e0fa1295f3c72be79be9a2d19d",
+    "diff_sha256":  "b3b6aae6ecd39247c70ca42de37603ad1c66061507caa60f99dbd40416e22278"
+}

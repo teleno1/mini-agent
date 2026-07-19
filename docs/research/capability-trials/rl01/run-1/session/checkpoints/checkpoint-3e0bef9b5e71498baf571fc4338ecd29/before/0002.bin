@@ -1,0 +1,9 @@
+from collections.abc import Iterable
+
+from .filters import filter_by_author
+from .models import Book
+
+
+def format_books(books: Iterable[Book], *, author: str | None = None) -> str:
+    selected = filter_by_author(books, author)
+    return "\n".join(f"{book.title} — {book.author} ({book.year})" for book in selected)

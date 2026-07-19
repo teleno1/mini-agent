@@ -1,0 +1,21 @@
+﻿diff --git a/src/reading_list/store.py b/src/reading_list/store.py
+index f08120b..e749393 100644
+--- a/src/reading_list/store.py
++++ b/src/reading_list/store.py
+@@ -1,6 +1,6 @@
+ from collections.abc import Iterable
+ 
+-from .filters import filter_by_author
++from .filters import filter_after_year, filter_by_author
+ from .models import Book
+ 
+ 
+@@ -11,5 +11,6 @@ class ReadingList:
+     def add(self, book: Book) -> None:
+         self._books.append(book)
+ 
+-    def list_books(self, *, author: str | None = None) -> list[Book]:
+-        return filter_by_author(self._books, author)
++    def list_books(self, *, author: str | None = None, after_year: int | None = None) -> list[Book]:
++        books = filter_by_author(self._books, author)
++        return filter_after_year(books, after_year)

@@ -1,0 +1,21 @@
+﻿diff --git a/src/reading_list/formatting.py b/src/reading_list/formatting.py
+index 0c55e14..7c1fe93 100644
+--- a/src/reading_list/formatting.py
++++ b/src/reading_list/formatting.py
+@@ -6,4 +6,4 @@ from .models import Book
+ 
+ def format_books(books: Iterable[Book], *, author: str | None = None) -> str:
+     selected = filter_by_author(books, author)
+-    return "\n".join(f"{book.title} — {book.author} ({book.year})" for book in selected)
++    return "\n".join(book.display() for book in selected)
+diff --git a/src/reading_list/models.py b/src/reading_list/models.py
+index c81e13e..4675711 100644
+--- a/src/reading_list/models.py
++++ b/src/reading_list/models.py
+@@ -6,3 +6,6 @@ class Book:
+     title: str
+     author: str
+     year: int
++
++    def display(self) -> str:
++        return f"{self.title} — {self.author} ({self.year})"

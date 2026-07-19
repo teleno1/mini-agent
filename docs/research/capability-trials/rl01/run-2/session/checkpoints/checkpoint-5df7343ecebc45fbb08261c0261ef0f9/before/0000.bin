@@ -1,0 +1,15 @@
+from collections.abc import Iterable
+
+from .filters import filter_after_year, filter_by_author
+from .models import Book
+
+
+class ReadingList:
+    def __init__(self, books: Iterable[Book] = ()) -> None:
+        self._books = list(books)
+
+    def add(self, book: Book) -> None:
+        self._books.append(book)
+
+    def list_books(self, *, author: str | None = None) -> list[Book]:
+        return filter_by_author(self._books, author)
