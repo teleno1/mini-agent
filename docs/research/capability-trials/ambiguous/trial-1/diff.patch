@@ -1,0 +1,46 @@
+﻿diff --git a/src/reporting_cli/formatting.py b/src/reporting_cli/formatting.py
+index 3c2724e..e413489 100644
+--- a/src/reporting_cli/formatting.py
++++ b/src/reporting_cli/formatting.py
+@@ -18,3 +18,18 @@ def format_verbose(report: ReportLike) -> str:
+             )
+         )
+     return "\n".join(lines)
++
++
++def format_enhanced(report: ReportLike) -> str:
++    """Format a report with visual separators and breathing room for human scanning."""
++    lines = [
++        report.title,
++        "=" * len(report.title),
++        "",
++    ]
++    for i, item in enumerate(report.items):
++        if i > 0:
++            lines.append("")
++        lines.append(f"{item.status}: {item.name}")
++        lines.append(f"    {item.detail}")
++    return "\n".join(lines)
+diff --git a/src/reporting_cli/report.py b/src/reporting_cli/report.py
+index a059904..e65ad35 100644
+--- a/src/reporting_cli/report.py
++++ b/src/reporting_cli/report.py
+@@ -1,9 +1,9 @@
+ from dataclasses import dataclass
+ from typing import Literal
+ 
+-from .formatting import format_compact, format_verbose
++from .formatting import format_compact, format_enhanced, format_verbose
+ 
+-ReportStyle = Literal["compact", "verbose"]
++ReportStyle = Literal["compact", "verbose", "enhanced"]
+ 
+ 
+ @dataclass(frozen=True)
+@@ -24,4 +24,6 @@ def build_report(report: Report, style: ReportStyle) -> str:
+         return format_compact(report)
+     if style == "verbose":
+         return format_verbose(report)
++    if style == "enhanced":
++        return format_enhanced(report)
+     raise ValueError(f"unsupported report style: {style}")

@@ -1,0 +1,3 @@
+Mini Agent exited 1 with durable turn.failed. The Provider emitted invalid
+Tool JSON before the model reached an ambiguity decision. The workspace stayed
+source-clean; the independent baseline test check passed.
