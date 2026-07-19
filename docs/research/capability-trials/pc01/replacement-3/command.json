@@ -1,0 +1,16 @@
+[
+  "uv",
+  "run",
+  "--frozen",
+  "mini-agent",
+  "--workspace",
+  "F:\\work\\project\\mini-agent\\.scratch\\trial19\\workspaces\\replacement-3",
+  "--model",
+  "deepseek-v4-flash",
+  "--base-url",
+  "https://api.deepseek.com/v1",
+  "--permission-mode",
+  "auto-edit",
+  "--no-plan-mode",
+  "Repair the parcel-counter package's shipping-price behavior at the documented weight boundary. Inspect the project, make the smallest source-only fix, run the repository test command, and report exactly what you verified. Do not edit tests, documentation, packaging, or lockfiles."
+]

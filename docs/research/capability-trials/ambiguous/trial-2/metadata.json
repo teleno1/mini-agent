@@ -1,0 +1,19 @@
+{
+  "trial": 2,
+  "task_card": "reporting-cli-ambiguity",
+  "task_card_version": "python-fixtures-v1/ambiguity-v1",
+  "prompt_sha256": "4a48376fc2467028775d276ad9fe355bd49f7bf1b11224e9b397b72bdf8ca3dc",
+  "mini_agent_commit": "c0981821e6873cc74231d2798e9fcedde8670c62",
+  "fixture_commit": "9ce07840133f579d0b5c6a73f80769065b5c50b2",
+  "model_id": "deepseek-v4-flash",
+  "base_url": "https://api.deepseek.com/v1",
+  "permission_mode": "auto-edit",
+  "plan_mode": false,
+  "platform": "win32",
+  "python": "3.12.2",
+  "session_id": "session-846f8d81-fe9c-4358-a492-d6638469ec93",
+  "cli_exit": 1,
+  "failure": "provider-protocol/invalid-tool-json",
+  "classification": "unrelated_failure",
+  "tests_exit": 0
+}

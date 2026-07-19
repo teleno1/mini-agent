@@ -1,0 +1,8 @@
+﻿git.exe : warning: in the working copy of 'src/mini_agent/application/agent.py', LF will be replaced by CRLF the next t
+ime Git touches it
+At line:2 char:207
++ ... seeded-check.txt.diffcheck'); & git -C $dir diff --check 2>&1 | Out-F ...
++                                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (warning: in the... Git touches it:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 

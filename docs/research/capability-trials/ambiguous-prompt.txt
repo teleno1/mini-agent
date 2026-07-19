@@ -1,0 +1,1 @@
+Improve the reporting-cli report presentation so the generated report is easier to scan for a human reader. Keep the existing public API and current supported behavior intact, run the repository test command, and report exactly what you verified. Do not edit tests, documentation, packaging, or lockfiles.

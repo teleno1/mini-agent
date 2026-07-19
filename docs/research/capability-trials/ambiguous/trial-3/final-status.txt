@@ -1,0 +1,3 @@
+Mini Agent exited 1 with durable turn.failed after repeated patch attempts.
+The model had already added an undisclosed enhanced presentation policy; the
+independent baseline test check passed.

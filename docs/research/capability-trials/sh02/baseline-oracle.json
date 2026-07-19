@@ -1,0 +1,579 @@
+{
+  "cases": [
+    {
+      "case": "successful-read",
+      "checks": {
+        "durable_audit": true,
+        "durable_terminal": true,
+        "typed_pairing": true
+      },
+      "event_sha256": "60d26982792b8e48289f85903c0a5816fd4de8aa3397d72938a9f3ff2eff25dc",
+      "event_types": [
+        "session.created",
+        "turn.started",
+        "user.message",
+        "context.manifest.recorded",
+        "model.request.started",
+        "model.request.completed",
+        "assistant.message",
+        "tool.proposed",
+        "tool.validated",
+        "tool.started",
+        "tool.completed",
+        "context.manifest.recorded",
+        "model.request.started",
+        "model.request.completed",
+        "assistant.message",
+        "turn.completed"
+      ],
+      "manifest": {
+        "configuration_hash": "54f98f6308f41a4d57c830b7c985f3ebb1c5e518e99f3369a14150303901bf12",
+        "included_event_range": [
+          1,
+          11
+        ],
+        "instruction_hashes": [],
+        "layers": [
+          {
+            "authority": 70,
+            "byte_count": 369,
+            "name": "safety-policy",
+            "role": "system",
+            "sha256": "b3fa142f7084f1bd0ca388b5314f5e83d6d997e170009412fa4f3a165efb51f9",
+            "source": "built-in safety policy",
+            "token_estimate": 93
+          },
+          {
+            "authority": 60,
+            "byte_count": 379,
+            "name": "core-behavior",
+            "role": "system",
+            "sha256": "cad5b9931686d7c81f243f893c9b6574a87b8b3cecd579721921d1e97b65f62e",
+            "source": "built-in core behavior",
+            "token_estimate": 95
+          },
+          {
+            "authority": 50,
+            "byte_count": 2163,
+            "name": "tool-definitions",
+            "role": "system",
+            "sha256": "bd75aa409c00e98f1d59bc803cc98f2868abd25e2d4057cae1f25af9a901a6e2",
+            "source": "built-in Tool Registry",
+            "token_estimate": 541
+          },
+          {
+            "authority": 40,
+            "byte_count": 49,
+            "name": "project-instructions",
+            "role": "developer",
+            "sha256": "279abd1b277cde1f82ea4c4f669fad5dd3c65aeea98ec74b5d7c9ec6ed818774",
+            "source": "Workspace",
+            "token_estimate": 13
+          },
+          {
+            "authority": 20,
+            "byte_count": 252,
+            "name": "history",
+            "role": "user",
+            "sha256": "1978d331f19feda7c4569b695a20438b9462e37e523379a9dec488567ab65d22",
+            "source": "durable Session events",
+            "token_estimate": 63
+          },
+          {
+            "authority": 10,
+            "byte_count": 23,
+            "name": "current-user",
+            "role": "user",
+            "sha256": "46d9b74e286676fc2d0e85c5022e4b82fb603d80908cbffd48e4374e48883007",
+            "source": "current user input",
+            "token_estimate": 6
+          }
+        ],
+        "manifest_hash": "56c8e5f91db4c088c4ca840726ec5eb4c47114c67e39e689ea93a789f15db9cb",
+        "message_sources": [
+          {
+            "event_id": "event-0007",
+            "event_type": "assistant.message",
+            "projection": "assistant-message",
+            "sequence": 7,
+            "source_kind": "session-event"
+          },
+          {
+            "event_id": "event-0011",
+            "event_type": "tool.completed",
+            "projection": "tool-result-message",
+            "sequence": 11,
+            "source_kind": "session-event"
+          },
+          {
+            "event_id": "event-0003",
+            "event_type": "user.message",
+            "projection": "current-user-message",
+            "sequence": 3,
+            "source_kind": "session-event"
+          }
+        ],
+        "request_id": "request-0002",
+        "request_parameters": {
+          "context_window_tokens": 128000,
+          "effective_response_reserve_tokens": 16000,
+          "model": "deepseek-v4-flash",
+          "permission_mode": "suggest",
+          "response_reserve_tokens": 16000
+        },
+        "session_id": "session-0001",
+        "summary_boundary": 0,
+        "token_estimate": 811
+      },
+      "passed": true,
+      "provider_history": [
+        {
+          "content": "inspect the sample file",
+          "role": "user"
+        },
+        {
+          "content": "",
+          "role": "assistant",
+          "tool_call_ids": [
+            "oracle-success"
+          ]
+        },
+        {
+          "content": "{\"content\": \"value = 1\\r\\n\", \"continuation\": null, \"end_line\": 1, \"path\": \"sample.py\", \"start_line\": 1, \"total_lines\": 1, \"truncated\": false}",
+          "outcome": "success",
+          "role": "tool",
+          "tool_call_id": "oracle-success"
+        }
+      ],
+      "provider_request_count": 2,
+      "result_outcome": "success",
+      "result_text": "{\"content\": \"value = 1\\r\\n\", \"continuation\": null, \"end_line\": 1, \"path\": \"sample.py\", \"start_line\": 1, \"total_lines\": 1, \"truncated\": false}",
+      "session_id": "session-0001",
+      "terminal_event": {
+        "causation_id": "event-0010",
+        "event_id": "event-0011",
+        "event_type": "tool.completed",
+        "payload": {
+          "name": "read_file",
+          "outcome": "success",
+          "result": {
+            "data": {
+              "content": "value = 1\r\n",
+              "continuation": null,
+              "end_line": 1,
+              "path": "sample.py",
+              "start_line": 1,
+              "total_lines": 1,
+              "truncated": false
+            },
+            "error": null,
+            "outcome": "success",
+            "tool_call_id": "oracle-success",
+            "tool_name": "read_file"
+          },
+          "result_text": "{\"content\": \"value = 1\\r\\n\", \"continuation\": null, \"end_line\": 1, \"path\": \"sample.py\", \"start_line\": 1, \"total_lines\": 1, \"truncated\": false}",
+          "tool_call_id": "oracle-success"
+        },
+        "schema_version": 1,
+        "sequence": 11,
+        "session_id": "session-0001",
+        "timestamp": "2026-07-19T00:00:00.000015+00:00",
+        "turn_id": "turn-0001"
+      },
+      "turn_id": "turn-0001"
+    },
+    {
+      "case": "invalid-tool",
+      "checks": {
+        "durable_audit": true,
+        "durable_terminal": true,
+        "typed_pairing": true
+      },
+      "event_sha256": "25b12f9e6d28f44cf7eea97f22b134314283e74070d20d6ae175f26087a3cbf6",
+      "event_types": [
+        "session.created",
+        "turn.started",
+        "user.message",
+        "context.manifest.recorded",
+        "model.request.started",
+        "model.request.completed",
+        "assistant.message",
+        "tool.proposed",
+        "tool.failed",
+        "context.manifest.recorded",
+        "model.request.started",
+        "model.request.completed",
+        "assistant.message",
+        "turn.completed"
+      ],
+      "manifest": {
+        "configuration_hash": "54f98f6308f41a4d57c830b7c985f3ebb1c5e518e99f3369a14150303901bf12",
+        "included_event_range": [
+          1,
+          9
+        ],
+        "instruction_hashes": [],
+        "layers": [
+          {
+            "authority": 70,
+            "byte_count": 369,
+            "name": "safety-policy",
+            "role": "system",
+            "sha256": "b3fa142f7084f1bd0ca388b5314f5e83d6d997e170009412fa4f3a165efb51f9",
+            "source": "built-in safety policy",
+            "token_estimate": 93
+          },
+          {
+            "authority": 60,
+            "byte_count": 379,
+            "name": "core-behavior",
+            "role": "system",
+            "sha256": "cad5b9931686d7c81f243f893c9b6574a87b8b3cecd579721921d1e97b65f62e",
+            "source": "built-in core behavior",
+            "token_estimate": 95
+          },
+          {
+            "authority": 50,
+            "byte_count": 2163,
+            "name": "tool-definitions",
+            "role": "system",
+            "sha256": "bd75aa409c00e98f1d59bc803cc98f2868abd25e2d4057cae1f25af9a901a6e2",
+            "source": "built-in Tool Registry",
+            "token_estimate": 541
+          },
+          {
+            "authority": 40,
+            "byte_count": 49,
+            "name": "project-instructions",
+            "role": "developer",
+            "sha256": "279abd1b277cde1f82ea4c4f669fad5dd3c65aeea98ec74b5d7c9ec6ed818774",
+            "source": "Workspace",
+            "token_estimate": 13
+          },
+          {
+            "authority": 20,
+            "byte_count": 122,
+            "name": "history",
+            "role": "user",
+            "sha256": "ed8d4219e3c828a79415f18e136db259916e8c8d01ac1340100f1aac939e8d06",
+            "source": "durable Session events",
+            "token_estimate": 31
+          },
+          {
+            "authority": 10,
+            "byte_count": 30,
+            "name": "current-user",
+            "role": "user",
+            "sha256": "ba3f0c536c8a16e72675bb25e5732d57a9f3adf6a0b71bab5b4afaf0ed9e8c69",
+            "source": "current user input",
+            "token_estimate": 8
+          }
+        ],
+        "manifest_hash": "433dc7888534b5f45737a185fa3e264e3953fe2ab16bdd037d5ddd356ea31aa4",
+        "message_sources": [
+          {
+            "event_id": "event-0007",
+            "event_type": "assistant.message",
+            "projection": "assistant-message",
+            "sequence": 7,
+            "source_kind": "session-event"
+          },
+          {
+            "event_id": "event-0009",
+            "event_type": "tool.failed",
+            "projection": "tool-result-message",
+            "sequence": 9,
+            "source_kind": "session-event"
+          },
+          {
+            "event_id": "event-0003",
+            "event_type": "user.message",
+            "projection": "current-user-message",
+            "sequence": 3,
+            "source_kind": "session-event"
+          }
+        ],
+        "request_id": "request-0002",
+        "request_parameters": {
+          "context_window_tokens": 128000,
+          "effective_response_reserve_tokens": 16000,
+          "model": "deepseek-v4-flash",
+          "permission_mode": "suggest",
+          "response_reserve_tokens": 16000
+        },
+        "session_id": "session-0001",
+        "summary_boundary": 0,
+        "token_estimate": 781
+      },
+      "passed": true,
+      "provider_history": [
+        {
+          "content": "diagnose the invalid operation",
+          "role": "user"
+        },
+        {
+          "content": "",
+          "role": "assistant",
+          "tool_call_ids": [
+            "oracle-invalid"
+          ]
+        },
+        {
+          "content": "Tool name is not registered",
+          "outcome": "invalid",
+          "role": "tool",
+          "tool_call_id": "oracle-invalid"
+        }
+      ],
+      "provider_request_count": 2,
+      "result_outcome": "invalid",
+      "result_text": "Tool name is not registered",
+      "session_id": "session-0001",
+      "terminal_event": {
+        "causation_id": "event-0008",
+        "event_id": "event-0009",
+        "event_type": "tool.failed",
+        "payload": {
+          "failure": {
+            "category": "tool-validation",
+            "cause": null,
+            "code": "unknown-tool",
+            "description": "Tool name is not registered",
+            "details": {
+              "outcome": "invalid"
+            },
+            "error_id": "failure-0001",
+            "failure_id": "failure-0001",
+            "request_id": null,
+            "required_user_action": "inspect the diagnostic error ID",
+            "retry_after_seconds": null,
+            "retryable": false,
+            "session_id": "session-0001",
+            "source": "missing_tool",
+            "tool_call_id": "oracle-invalid",
+            "turn_id": "turn-0001"
+          },
+          "name": "missing_tool",
+          "outcome": "invalid",
+          "result": {
+            "data": {},
+            "error": {
+              "category": "tool-validation",
+              "code": "unknown-tool",
+              "message": "Tool name is not registered"
+            },
+            "outcome": "invalid",
+            "tool_call_id": "oracle-invalid",
+            "tool_name": "missing_tool"
+          },
+          "result_text": "Tool name is not registered",
+          "tool_call_id": "oracle-invalid"
+        },
+        "schema_version": 1,
+        "sequence": 9,
+        "session_id": "session-0001",
+        "timestamp": "2026-07-19T00:00:00.000013+00:00",
+        "turn_id": "turn-0001"
+      },
+      "turn_id": "turn-0001"
+    },
+    {
+      "case": "denied-path",
+      "checks": {
+        "durable_audit": true,
+        "durable_terminal": true,
+        "typed_pairing": true
+      },
+      "event_sha256": "09cedb5ddfa0091b8b7dcf2e708d9a7666d50c6c45fbd174b74637d6b22381f9",
+      "event_types": [
+        "session.created",
+        "turn.started",
+        "user.message",
+        "context.manifest.recorded",
+        "model.request.started",
+        "model.request.completed",
+        "assistant.message",
+        "tool.proposed",
+        "tool.validated",
+        "tool.failed",
+        "context.manifest.recorded",
+        "model.request.started",
+        "model.request.completed",
+        "assistant.message",
+        "turn.completed"
+      ],
+      "manifest": {
+        "configuration_hash": "54f98f6308f41a4d57c830b7c985f3ebb1c5e518e99f3369a14150303901bf12",
+        "included_event_range": [
+          1,
+          10
+        ],
+        "instruction_hashes": [],
+        "layers": [
+          {
+            "authority": 70,
+            "byte_count": 369,
+            "name": "safety-policy",
+            "role": "system",
+            "sha256": "b3fa142f7084f1bd0ca388b5314f5e83d6d997e170009412fa4f3a165efb51f9",
+            "source": "built-in safety policy",
+            "token_estimate": 93
+          },
+          {
+            "authority": 60,
+            "byte_count": 379,
+            "name": "core-behavior",
+            "role": "system",
+            "sha256": "cad5b9931686d7c81f243f893c9b6574a87b8b3cecd579721921d1e97b65f62e",
+            "source": "built-in core behavior",
+            "token_estimate": 95
+          },
+          {
+            "authority": 50,
+            "byte_count": 2163,
+            "name": "tool-definitions",
+            "role": "system",
+            "sha256": "bd75aa409c00e98f1d59bc803cc98f2868abd25e2d4057cae1f25af9a901a6e2",
+            "source": "built-in Tool Registry",
+            "token_estimate": 541
+          },
+          {
+            "authority": 40,
+            "byte_count": 49,
+            "name": "project-instructions",
+            "role": "developer",
+            "sha256": "279abd1b277cde1f82ea4c4f669fad5dd3c65aeea98ec74b5d7c9ec6ed818774",
+            "source": "Workspace",
+            "token_estimate": 13
+          },
+          {
+            "authority": 20,
+            "byte_count": 149,
+            "name": "history",
+            "role": "user",
+            "sha256": "952a57a3623c7d5bfc2d128370594d0c839d39d16838347033f7fd847d18719c",
+            "source": "durable Session events",
+            "token_estimate": 38
+          },
+          {
+            "authority": 10,
+            "byte_count": 24,
+            "name": "current-user",
+            "role": "user",
+            "sha256": "7a170b42f9671accb4da2c0733badae9fc5014243dd0034eb9f618ee41e81efc",
+            "source": "current user input",
+            "token_estimate": 6
+          }
+        ],
+        "manifest_hash": "9de9c9e1c168af5172a9ad4d41987aae057f464a861f13cb9c1b7b81472598d2",
+        "message_sources": [
+          {
+            "event_id": "event-0007",
+            "event_type": "assistant.message",
+            "projection": "assistant-message",
+            "sequence": 7,
+            "source_kind": "session-event"
+          },
+          {
+            "event_id": "event-0010",
+            "event_type": "tool.failed",
+            "projection": "tool-result-message",
+            "sequence": 10,
+            "source_kind": "session-event"
+          },
+          {
+            "event_id": "event-0003",
+            "event_type": "user.message",
+            "projection": "current-user-message",
+            "sequence": 3,
+            "source_kind": "session-event"
+          }
+        ],
+        "request_id": "request-0002",
+        "request_parameters": {
+          "context_window_tokens": 128000,
+          "effective_response_reserve_tokens": 16000,
+          "model": "deepseek-v4-flash",
+          "permission_mode": "suggest",
+          "response_reserve_tokens": 16000
+        },
+        "session_id": "session-0001",
+        "summary_boundary": 0,
+        "token_estimate": 786
+      },
+      "passed": true,
+      "provider_history": [
+        {
+          "content": "diagnose the denied path",
+          "role": "user"
+        },
+        {
+          "content": "",
+          "role": "assistant",
+          "tool_call_ids": [
+            "oracle-denied"
+          ]
+        },
+        {
+          "content": "Workspace traversal is not allowed",
+          "outcome": "denied",
+          "role": "tool",
+          "tool_call_id": "oracle-denied"
+        }
+      ],
+      "provider_request_count": 2,
+      "result_outcome": "denied",
+      "result_text": "Workspace traversal is not allowed",
+      "session_id": "session-0001",
+      "terminal_event": {
+        "causation_id": "event-0009",
+        "event_id": "event-0010",
+        "event_type": "tool.failed",
+        "payload": {
+          "failure": {
+            "category": "permission-denial",
+            "cause": null,
+            "code": "traversal",
+            "description": "Workspace traversal is not allowed",
+            "details": {
+              "outcome": "denied"
+            },
+            "error_id": "failure-0001",
+            "failure_id": "failure-0001",
+            "request_id": null,
+            "required_user_action": "review the Tool decision or retry manually",
+            "retry_after_seconds": null,
+            "retryable": false,
+            "session_id": "session-0001",
+            "source": "read_file",
+            "tool_call_id": "oracle-denied",
+            "turn_id": "turn-0001"
+          },
+          "name": "read_file",
+          "outcome": "denied",
+          "result": {
+            "data": {},
+            "error": {
+              "category": "permission",
+              "code": "traversal",
+              "message": "Workspace traversal is not allowed"
+            },
+            "outcome": "denied",
+            "tool_call_id": "oracle-denied",
+            "tool_name": "read_file"
+          },
+          "result_text": "Workspace traversal is not allowed",
+          "tool_call_id": "oracle-denied"
+        },
+        "schema_version": 1,
+        "sequence": 10,
+        "session_id": "session-0001",
+        "timestamp": "2026-07-19T00:00:00.000014+00:00",
+        "turn_id": "turn-0001"
+      },
+      "turn_id": "turn-0001"
+    }
+  ],
+  "oracle": "sh02-v1",
+  "passed": true
+}

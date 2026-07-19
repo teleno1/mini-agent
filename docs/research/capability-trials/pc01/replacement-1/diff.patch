@@ -1,0 +1,13 @@
+diff --git a/src/parcel_counter/pricing.py b/src/parcel_counter/pricing.py
+index 3b736a7..d7f6d27 100644
+--- a/src/parcel_counter/pricing.py
++++ b/src/parcel_counter/pricing.py
+@@ -11,7 +11,7 @@ def shipping_price(weight_kg: float) -> int:
+     if weight_kg <= 1:
+         return 5
+     # Seeded defect: the documented five-kilogram upper boundary is skipped.
+-    if weight_kg < 5:
++    if weight_kg <= 5:
+         return 8
+     return 12
+ 

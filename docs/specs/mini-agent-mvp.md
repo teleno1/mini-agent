@@ -112,7 +112,7 @@ The product is an independent learning project. It adopts publicly described age
 - Resolve existing links before read authorization; writes reject any link/reparse component and recheck the nearest real parent immediately before commit.
 - Hard-deny `.mini-agent`, real environment-secret files, private keys, cloud credentials, credential stores, boundary escapes, and catastrophic deletion. Permit ordinary examples such as environment templates.
 - Treat `AGENTS.md`, repository metadata, CI configuration, lockfiles, and security policy as Protected Paths whose writes always ask.
-- Permission modes are suggest, auto-edit, and full-auto. Safe reads are automatic. Suggest asks for all writes and Shell. Auto-edit allows ordinary adds/updates but asks for Shell. Full-auto additionally allows only recognized local read/build/test Shell patterns. Deletes, Protected Path writes, network, install, Git writes, interpreters, redirection, chaining, and unknown Shell commands ask; hard hazards deny.
+- Permission modes are suggest, auto-edit, and full-auto. Safe reads are automatic. Suggest asks for all writes and Shell. Auto-edit allows ordinary adds/updates but asks for Shell. Full-auto additionally allows recognized local read/build/test/format/static-check/code-generation Shell patterns and explicitly recognized, lockfile-verified declared-dependency retrieval. Deletes, Protected Path writes, unrecognized network or install commands, Git writes, interpreters, redirection, chaining, and unknown Shell commands ask; hard hazards deny.
 - Authorization order is schema validation, path normalization and sensitive checks, immutable Risk Assessment, hard deny, exact Session grant, mode default, optional confirmation, then final path and argument-hash recheck.
 - Confirmation supports allow once and allow exact for Session. Any argument change creates a new Tool Call and decision.
 - Persist a redacted Permission Decision with the Tool Call ID, risk, mode, decision, matched rule/reason, scope, normalized resource summary, argument hash, and timestamp.
@@ -272,8 +272,8 @@ The product is an independent learning project. It adopts publicly described age
 - Multiple production Model Provider implementations.
 - Parallel Tool execution, sub-agents, MCP, Hooks, plugins, IDE integration, Web search, desktop UI, or Web UI.
 - Container-grade sandboxing, virtual-machine isolation, cloud Session sync, branched Sessions, or cross-machine multi-writer storage.
-- Interactive Shell programs, detached/background process guarantees, arbitrary model-controlled environment variables, or unrestricted full-auto authority.
-- Image/binary editing, fuzzy patches, automatic Git commits, dependency installation by the Agent, or broad command catalogs.
+- Interactive Shell programs, detached/background process guarantees, arbitrary model-controlled environment variables, unrestricted full-auto authority, or dependency changes outside explicitly recognized lockfile-verified retrieval.
+- Image/binary editing, fuzzy patches, automatic Git commits, dependency changes outside explicitly recognized lockfile-verified retrieval, or broad command catalogs.
 - Hidden chain-of-thought storage, automatic long-term memory, prompt-cache optimizations, ML safety classifiers, or compatibility reverse engineering.
 - Real-model calls in CI, model-quality benchmarking, or a guarantee that every coding task succeeds.
 - Public PyPI publication, GitHub Release, standalone executables, native installers, Docker images, signing, SBOMs, automatic updates, or release-channel automation.

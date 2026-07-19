@@ -1,0 +1,17 @@
+"""Pure pricing rules for domestic parcels."""
+
+import math
+
+
+def shipping_price(weight_kg: float) -> int:
+    """Return the shipping price in credits for a parcel's weight."""
+
+    if not math.isfinite(weight_kg) or weight_kg < 0:
+        raise ValueError("weight must be finite and non-negative")
+    if weight_kg <= 1:
+        return 5
+    # Seeded defect: the documented five-kilogram upper boundary is skipped.
+    if weight_kg < 5:
+        return 8
+    return 12
+

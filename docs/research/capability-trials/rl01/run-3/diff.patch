@@ -1,0 +1,37 @@
+﻿diff --git a/src/reading_list/formatting.py b/src/reading_list/formatting.py
+index 0c55e14..f853b37 100644
+--- a/src/reading_list/formatting.py
++++ b/src/reading_list/formatting.py
+@@ -1,9 +1,9 @@
+ from collections.abc import Iterable
+ 
+-from .filters import filter_by_author
++from .filters import filter_after_year, filter_by_author
+ from .models import Book
+ 
+ 
+-def format_books(books: Iterable[Book], *, author: str | None = None) -> str:
+-    selected = filter_by_author(books, author)
++def format_books(books: Iterable[Book], *, author: str | None = None, after_year: int | None = None) -> str:
++    selected = filter_after_year(filter_by_author(books, author), after_year)
+     return "\n".join(f"{book.title} — {book.author} ({book.year})" for book in selected)
+diff --git a/src/reading_list/store.py b/src/reading_list/store.py
+index f08120b..70bd3cf 100644
+--- a/src/reading_list/store.py
++++ b/src/reading_list/store.py
+@@ -1,6 +1,6 @@
+ from collections.abc import Iterable
+ 
+-from .filters import filter_by_author
++from .filters import filter_after_year, filter_by_author
+ from .models import Book
+ 
+ 
+@@ -11,5 +11,5 @@ class ReadingList:
+     def add(self, book: Book) -> None:
+         self._books.append(book)
+ 
+-    def list_books(self, *, author: str | None = None) -> list[Book]:
+-        return filter_by_author(self._books, author)
++    def list_books(self, *, author: str | None = None, after_year: int | None = None) -> list[Book]:
++        return filter_after_year(filter_by_author(self._books, author), after_year)

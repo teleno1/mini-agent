@@ -1,0 +1,34 @@
+{
+  "oracle": "rl02-v1",
+  "workspace": "F:\\work\\project\\mini-agent\\.scratch\\trial20\\rl02\\replacement-1\\workspace",
+  "test_command": [
+    "D:\\miniconda\\python.exe",
+    "-m",
+    "unittest",
+    "discover",
+    "-s",
+    "tests",
+    "-v"
+  ],
+  "test_exit": 0,
+  "test_output": "test_author_format (test_cli_format.FormattingTests.test_author_format) ... ok\ntest_default_format (test_cli_format.FormattingTests.test_default_format) ... ok\ntest_author_filter_preserves_order (test_filters.FilterTests.test_author_filter_preserves_order) ... ok\ntest_no_author_filter_copies_input (test_filters.FilterTests.test_no_author_filter_copies_input) ... ok\ntest_year_filter_is_available_for_future_selection (test_filters.FilterTests.test_year_filter_is_available_for_future_selection) ... ok\ntest_author_selection_is_exact (test_store.ReadingListTests.test_author_selection_is_exact) ... ok\ntest_books_are_kept_in_insertion_order (test_store.ReadingListTests.test_books_are_kept_in_insertion_order) ... ok\n\n----------------------------------------------------------------------\nRan 7 tests in 0.002s\n\nOK\n",
+  "changed_files": [
+    "src/reading_list/formatting.py",
+    "src/reading_list/models.py"
+  ],
+  "diff_check_exit": 0,
+  "diff_check_output": "",
+  "checks": {
+    "display_label_behavior": true,
+    "formatter_output_unchanged": true,
+    "author_output_unchanged": true,
+    "store_behavior_unchanged": true,
+    "model_owns_label": true,
+    "formatter_delegates": true,
+    "exact_refactor_scope": true,
+    "no_tests_or_dependency_change": true,
+    "visible_tests": true,
+    "diff_check": true
+  },
+  "passed": true
+}

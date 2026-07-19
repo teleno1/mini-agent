@@ -1,0 +1,15 @@
+from collections.abc import Iterable
+
+from .models import Book
+
+
+def filter_by_author(books: Iterable[Book], author: str | None) -> list[Book]:
+    if author is None:
+        return list(books)
+    return [book for book in books if book.author == author]
+
+
+def filter_after_year(books: Iterable[Book], year: int | None) -> list[Book]:
+    if year is None:
+        return list(books)
+    return [book for book in books if book.year > year]

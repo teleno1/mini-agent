@@ -177,12 +177,12 @@ class PermissionPolicyGate:
                 return (
                     True,
                     "full-auto-recognized-local",
-                    "full-auto allows only a recognized local read, build, or test command",
+                    "full-auto allows recognized local Code-Work Commands",
                 )
             return (
                 False,
                 "shell-confirmation",
-                "only recognized local Shell commands may be automatic",
+                "only recognized local Code-Work Commands may be automatic",
             )
         return False, "side-effect-confirmation", "this side effect requires focused confirmation"
 

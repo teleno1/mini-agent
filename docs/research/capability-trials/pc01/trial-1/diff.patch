@@ -1,0 +1,39 @@
+diff --git a/src/parcel_counter/pricing.py b/src/parcel_counter/pricing.py
+index 3b736a7..d7f6d27 100644
+--- a/src/parcel_counter/pricing.py
++++ b/src/parcel_counter/pricing.py
+@@ -11,7 +11,7 @@ def shipping_price(weight_kg: float) -> int:
+     if weight_kg <= 1:
+         return 5
+     # Seeded defect: the documented five-kilogram upper boundary is skipped.
+-    if weight_kg < 5:
++    if weight_kg <= 5:
+         return 8
+     return 12
+ 
+diff --git a/tests/__pycache__/test_pricing.cpython-312.pyc b/tests/__pycache__/test_pricing.cpython-312.pyc
+index 679cd4e1b5287192d253a2d52b01f3a848d1a211..72716ccacecd6522f90e4e3f66a719e47344c7ca 100644
+GIT binary patch
+delta 811
+zcmZuu&ubGw6rS1LZkEJ!yD_?nMN*{|QVdm8P$^zK=*b_@(^3pEJHd^cq|9!Rlwc?b
+zJqTht2m2>j0@8yw{{%r26bcg*K|BOJ6x2&kzLy_|Q0MTy_wl}Y^Sw7+Q(CQ$@pzQL
+zc~x02pHm6>fn;)waq{~UByWgIT<Q~N6sbdpTyYeLimz5QN27$%^042e#VD5J(;S&g
+z6vA2&0F4<PIu<7WBUIBU*EVB>OmrP(q@!qN#*bEFPK-jsJH*vr5I4e<a_V@e4h)FL
+zi8pB07(kXJ_p(%K4+`Ov0a}o1z>DqXucQuS4=MrkO956Ej@CqzUQ9fz@u$H?p~!;u
+zkb4C`cUkPy`}D+)(p<pF2e>p2Rtd+UM|ZgismzG3k`W)2tJD;S$^x~7rFzyesd%Zb
+z(!`E(T6|NZAR4IeEwnS$PrTC{{S-cs6D{2qOEcXIxF&uE0p(Jwz*JK8s-@|h^ZFy2
+z7MprwWe&AT1RG%<Ap@{SxP>{o=EHdqV&Z&cu{A6p&Cc?(5MX1CKpOR`7ltedWn=?h
+z^}WX&cP%w!QunF>;~_{xE{%M?<oPV0M=593Fp#s56q%nd*6P)e@sWLF4cgr<z{R11
+zMQ8`E>SJ3+#%iVJ)_r!1uRsNVD0m2Ps8UM%B-SU<J~6+N)OVt88(YS<xn;hl?JMnY
+x_pW$;VCQ;v?rouGU)sOcv#)<XdE*PY`IBV-=yP;wH+7I+?xmOi5+K7(`~$-%snGxc
+
+delta 520
+zcmZWlJxIe)5Pp}JG@-TCN^P|Yji5sPT^z;5L2yt9afqS>^Td{<mX~x8L>Ct~<qbM^
+zla7L$o8aW2PC^{TL2wXs>g2mdMe&C3zI)%@_l^tGckRnJ$z+_!8247oX9^)tSbT@}
+zMc(HmIUx>lz$I3c!2($;uHsRP0#V2;ap(bYR0d_^IP6VmJ5bbK&|zM5!fS>~)__p;
+znY-zOEX?Md=u}3HfO%Ed4wzU}7Qhg7W!KcD{9;JpEx-+<5#A<gSP)fO5G!;N65@!O
+zkP_##l>XN$M${>()s?K+Q{$2ysuyWoga0-Z^O_Y);}2t^py$N3b~lv8rW^vchpJ}>
+zTOln~Hvdju#@3)q<n^72B=({S&meRo^hszCo<fdmb3A7YbaAB*?6(AbE5>+UrqHNW
+zN<qN<AWT(lzQNq}jqO?`U_9EwSd!9=?X$?JAKiY;o5qy4?bKX0%?G7`_w`K)ZxjF?
+cN#c>TKa=7|tOEv5yB~Un?|a0pp{qFm2~b&TVgLXD
+

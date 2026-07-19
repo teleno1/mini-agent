@@ -1,0 +1,20 @@
++ You
+|   > Diagnose and repair a Context Frame reconstruction regression. When a model Tool Call ends in success, denial, validation failure, or interruption, the next provider request must contain exactly one typed Tool Result paired with that call ID. Audit-only lifecycle events must not become synthetic conversation messages. Preserve the existing durable event ordering and safety behavior. Make the smallest source-only fix, do not edit tests or contracts, run focused checks, and report what was verified.
+|
+| Agent
+|   [TOOL START] read_file
+|     CONTEXT.md
+|   [TOOL RESULT] read_file (CONTEXT.md) - completed
+|   [TOOL START] read_file
+|     docs/agents/domain.md
+|   [TOOL RESULT] read_file (docs/agents/domain.md) - completed
+|   [TOOL START] read_file
+|     docs/agents/issue-tracker.md
+|   [TOOL RESULT] read_file (docs/agents/issue-tracker.md) - completed
+|   >  [stream incomplete]
+|   [FAILURE] Turn failed [failure-fee58e9f-5613-415a-83cd-665d114c5503]; the Session remains available for another input.
+---
+Status: context 4005/128000 tokens (3.1%)
+Commands: /help  /plan  /config  /sessions  /exit
+
+Process exit: 1. Provider protocol failure: invalid-normalized-stream.

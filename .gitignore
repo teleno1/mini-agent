@@ -5,6 +5,7 @@ __pycache__/
 .ruff_cache/
 .venv/
 .mini-agent/
+.scratch/
 .env
 .env.*
 !.env.example

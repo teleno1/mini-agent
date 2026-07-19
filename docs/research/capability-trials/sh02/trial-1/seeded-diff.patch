@@ -1,0 +1,14 @@
+﻿diff --git a/src/mini_agent/context.py b/src/mini_agent/context.py
+index 86d0948..dbb73cb 100644
+--- a/src/mini_agent/context.py
++++ b/src/mini_agent/context.py
+@@ -466,6 +466,9 @@ def _eligible_history(history: Sequence[Message]) -> tuple[Message, ...]:
+             eligible.append(message)
+             continue
+         if isinstance(message, ToolResultMessage):
++            # Seeded SH-02 regression: terminal Tool Results disappear from
++            # the next provider request.
++            continue
+             if message.tool_call_id not in visible_call_ids or message.tool_call_id in seen_results:
+                 continue
+             seen_results.add(message.tool_call_id)

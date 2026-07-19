@@ -1,0 +1,56 @@
+﻿diff --git a/src/reading_list/filters.py b/src/reading_list/filters.py
+index 16e367c..2228b22 100644
+--- a/src/reading_list/filters.py
++++ b/src/reading_list/filters.py
+@@ -13,3 +13,14 @@ def filter_after_year(books: Iterable[Book], year: int | None) -> list[Book]:
+     if year is None:
+         return list(books)
+     return [book for book in books if book.year > year]
++
++
++def filter_books(
++    books: Iterable[Book],
++    *,
++    author: str | None = None,
++    after_year: int | None = None,
++) -> list[Book]:
++    result = filter_by_author(books, author)
++    result = filter_after_year(result, after_year)
++    return result
+diff --git a/src/reading_list/formatting.py b/src/reading_list/formatting.py
+index 0c55e14..d4e8168 100644
+--- a/src/reading_list/formatting.py
++++ b/src/reading_list/formatting.py
+@@ -1,9 +1,9 @@
+ from collections.abc import Iterable
+ 
+-from .filters import filter_by_author
++from .filters import filter_books
+ from .models import Book
+ 
+ 
+-def format_books(books: Iterable[Book], *, author: str | None = None) -> str:
+-    selected = filter_by_author(books, author)
++def format_books(books: Iterable[Book], *, author: str | None = None, after_year: int | None = None) -> str:
++    selected = filter_books(books, author=author, after_year=after_year)
+     return "\n".join(f"{book.title} — {book.author} ({book.year})" for book in selected)
+diff --git a/src/reading_list/store.py b/src/reading_list/store.py
+index f08120b..b4443d9 100644
+--- a/src/reading_list/store.py
++++ b/src/reading_list/store.py
+@@ -1,6 +1,6 @@
+ from collections.abc import Iterable
+ 
+-from .filters import filter_by_author
++from .filters import filter_books
+ from .models import Book
+ 
+ 
+@@ -11,5 +11,5 @@ class ReadingList:
+     def add(self, book: Book) -> None:
+         self._books.append(book)
+ 
+-    def list_books(self, *, author: str | None = None) -> list[Book]:
+-        return filter_by_author(self._books, author)
++    def list_books(self, *, author: str | None = None, after_year: int | None = None) -> list[Book]:
++        return filter_books(self._books, author=author, after_year=after_year)

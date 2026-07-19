@@ -1,0 +1,24 @@
+{
+  "trial": 2,
+  "task_card": "PC-01",
+  "task_card_version": "python-fixtures-v1/pc01-v1",
+  "prompt_sha256": "eb64a9103167e6ec874d96fe9223adbedc8d786afd0743de102e6d3938ded700",
+  "mini_agent_commit": "706ad3ee39e96bff8b86df7e7ac14542daa0aaaf",
+  "fixture_commit": "0ee461acc07efa7c1bda33c300217c70fe34f06f",
+  "model_id": "deepseek-v4-flash",
+  "base_url": "https://api.deepseek.com/v1",
+  "permission_mode": "auto-edit",
+  "plan_mode": false,
+  "platform": "win32",
+  "python": "3.12.2 | packaged by conda-forge | (main, Feb 16 2024, 20:42:31) [MSC v.1937 64 bit (AMD64)]",
+  "workspace": "F:\\work\\project\\mini-agent\\.scratch\\trial19\\workspaces\\replacement-2",
+  "session_ids": [
+    "session-9a24bb95-8792-4a18-8991-6404d8e6313d"
+  ],
+  "started_at": "2026-07-19T06:28:31.069243+00:00",
+  "finished_at": "2026-07-19T06:29:31.808762+00:00",
+  "timed_out": false,
+  "cli_exit": 1,
+  "oracle_exit": 0,
+  "baseline_exit": 1
+}

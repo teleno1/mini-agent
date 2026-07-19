@@ -1,0 +1,92 @@
+﻿diff --git a/src/reporting_cli/formatting.py b/src/reporting_cli/formatting.py
+index 3c2724e..46443c8 100644
+--- a/src/reporting_cli/formatting.py
++++ b/src/reporting_cli/formatting.py
+@@ -18,3 +18,71 @@ def format_verbose(report: ReportLike) -> str:
+             )
+         )
+     return "\n".join(lines)
++
++
++def _cell(text: str, width: int) -> str:
++    """Return text padded to *width* with one space on each side."""
++    return f" {text.ljust(width)} "
++
++
++def _divider(left: str, mid: str, right: str, *widths: int) -> str:
++    """Build a horizontal box-drawing separator for the given column widths."""
++    parts = [left]
++    for i, w in enumerate(widths):
++        parts.append("\u2500" * (w + 2))
++        if i < len(widths) - 1:
++            parts.append(mid)
++    parts.append(right)
++    return "".join(parts)
++
++
++def format_enhanced(report: ReportLike) -> str:
++    """Format a report as a visually scannable table with Unicode
++    box-drawing characters.  Columns (Status / Name / Detail) are
++    sized to the widest value in each category.  The title appears
++    as a centred header row above the column heads.
++    """
++    V = "\u2502"  # vertical bar
++    items = report.items
++
++    if not items:
++        pad = max(len(report.title) + 6, 30)
++        top = f"\u250c{"\u2500" * (pad - 2)}\u2510"
++        mid = f"{V} {report.title.center(pad - 4)} {V}"
++        emp = f"{V}{"(no items)".center(pad - 2)}{V}"
++        bot = f"\u2514{"\u2500" * (pad - 2)}\u2518"
++        return "\n".join([top, mid, emp, bot])
++
++    sw = max(len("Status"), max(len(it.status) for it in items))
++    nw = max(len("Name"), max(len(it.name) for it in items))
++    dw = max(len("Detail"), max(len(it.detail) for it in items))
++
++    # ┌──────┬────────┬─────────┐
++    top = _divider("\u250c", "\u252c", "\u2510", sw, nw, dw)
++
++    # │  Title (centred)                    │
++    inner_w = sw + nw + dw + 6
++    title_row = f"{V}{report.title.center(inner_w + 2)}{V}"
++
++    # │ Status   │ Name       │ Detail        │
++    header_row = (
++        f"{V}{_cell('Status', sw)}{V}"
++        f"{_cell('Name', nw)}{V}"
++        f"{_cell('Detail', dw)}{V}"
++    )
++
++    # ├──────────┼────────────┼───────────────┤
++    sep = _divider("\u251c", "\u253c", "\u2524", sw, nw, dw)
++
++    rows = [top, title_row, header_row, sep]
++    for item in items:
++        rows.append(
++            f"{V}{_cell(item.status, sw)}{V}"
++            f"{_cell(item.name, nw)}{V}"
++            f"{_cell(item.detail, dw)}{V}"
++        )
++
++    # └──────────┴────────────┴───────────────┘
++    rows.append(_divider("\u2514", "\u2534", "\u2518", sw, nw, dw))
++
++    return "\n".join(rows)
+diff --git a/src/reporting_cli/report.py b/src/reporting_cli/report.py
+index a059904..ce30f72 100644
+--- a/src/reporting_cli/report.py
++++ b/src/reporting_cli/report.py
+@@ -1,9 +1,9 @@
+ from dataclasses import dataclass
+ from typing import Literal
+ 
+-from .formatting import format_compact, format_verbose
++from .formatting import format_compact, format_enhanced, format_verbose
+ 
+-ReportStyle = Literal["compact", "verbose"]
++ReportStyle = Literal["compact", "verbose", "enhanced"]
+ 
+ 
+ @dataclass(frozen=True)
