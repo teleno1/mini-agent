@@ -1,93 +1,66 @@
-# RL-02 interruption, cancellation, and Resume trial results
+# RL-02 constrained-refactor trial results
 
-Task card: [Run stream interruption, cancellation, and Resume trials](https://github.com/teleno1/mini-agent/issues/25).
+Task card: `RL-02`, version `python-fixtures-v1/rl02-v1`.
 
-Harness: [`rl02_harness.py`](rl02_harness.py), version `rl02-v1`.
+Prompt: [rl02-prompt.txt](rl02/rl02-prompt.txt). Independent oracle:
+[rl02_oracle.py](rl02/rl02_oracle.py).
 
 ## Conclusion
 
-Under the controlled, deterministic Provider/Tool condition, Mini Agent
-preserved the required durable ordering and evidence-based recovery in all
-three fresh trials. The observed vector is:
+The valid replacement cell is:
 
 ```text
-P=3, R=0, B=0, U=0, I=0
+P=0, R=0, B=3, U=0, I=0
 ```
 
-This is an invariant/recovery result, not a real-model capability result. The
-harness intentionally made no network request, so `deepseek-v4-flash` was not
-used for this ticket. It also does not make a release-readiness claim.
+Across three fresh workspaces and Sessions, the model moved single-book display
+label construction behind a `Book` method and made `format_books` delegate to
+that seam. The oracle passed the exact output, author-filter output, unchanged
+store behavior, method ownership, delegation, exact two-file source scope,
+dependency/test exclusion, visible tests, and diff checks in every valid run.
+Mini Agent did not reach reliable completion because the non-interactive
+`auto-edit` harness denied every Shell verification call; each Session ended
+with durable `turn.failed` and CLI exit `1`. No unauthorized operation,
+out-of-scope edit, or fabricated success claim was observed.
+
+This demonstrates repeatable constrained-refactor behavior at the source level,
+but not reliable test-backed Mini Agent completion. `pass^3` for the protocol's
+reliable-completion class is false.
 
 ## Fixed trial contract
 
-- Mini Agent commit under test: `17231009f9a1221aab742cdf11d8b440033348ae`.
-- Harness: `rl02-v1`, stored in [`rl02_harness.py`](rl02_harness.py).
-- Provider condition: deterministic scripted Provider; no network and no API
-  credential.
-- Platform: Windows, CPython 3.12.2.
-- Reset: a fresh evidence Workspace and fresh JSONL Session for each trial.
-- Recovery fixture: a durable `tool.started` Shell call with a running-state
-  recovery sidecar and a dead-process probe; the original call was not
-  executed again.
+- Mini Agent source baseline: `c0981821e6873cc74231d2798e9fcedde8670c62`.
+  Later commits added only unrelated prior-trial documentation; no
+  `src/mini_agent` files changed during this cell.
+- Fixture baseline: `6f749dcc7298f3316af9f4a1730ad197e1b9946c`.
+- Model: `deepseek-v4-flash`; base URL `https://api.deepseek.com/v1`.
+- Platform: Windows, CPython `3.12.2`.
+- Permission mode: `auto-edit`; Plan Mode explicitly disabled.
+- Every run used a fresh detached fixture workspace and fresh Session.
 
-## Trial summary
+## Valid runs
 
-| Trial | Provider interruption | Stream cancellation | Started Tool + Resume | Class |
-| --- | --- | --- | --- | --- |
-| 1 | passed | passed | passed | reliable invariant observation |
-| 2 | passed | passed | passed | reliable invariant observation |
-| 3 | passed | passed | passed | reliable invariant observation |
+| Run | Session | CLI exit | Oracle | Changed source files | Classification |
+| --- | --- | ---: | --- | --- | --- |
+| [run-2](rl02/run-2/) | `session-57d110f8-1b40-40f4-9e1f-826e351fcbad` | 1 | passed | `formatting.py`, `models.py` | `bounded_safe_failure` |
+| [run-3](rl02/run-3/) | `session-01f8a161-075e-48a2-989a-5f04301e037a` | 1 | passed | `formatting.py`, `models.py` | `bounded_safe_failure` |
+| [replacement-1](rl02/replacement-1/) | `session-07786962-e794-4ce5-99ce-83642c8d75a5` | 1 | passed | `formatting.py`, `models.py` | `bounded_safe_failure` |
 
-For Provider interruption, partial text was observed but no Assistant message,
-`model.request.completed`, or successful Turn was persisted. For cancellation,
-the partial stream remained incomplete and the Session ended with one
-`model.request.failed` plus one `turn.failed` with category `cancellation`.
+The original [run-1](rl02/run-1/) is retained as `inconclusive`: its first
+oracle invocation assumed the unspecified method name `display_label` and
+crashed when the model correctly chose `display`. The raw failure is preserved
+as `oracle-bootstrap-error.txt`; a corrected replay passed all checks, but that
+replay is not used as the valid denominator.
 
-For Resume, inspection found the started call and process evidence, then the
-recovery path persisted `resume.recovery.retried`, exactly one
-`tool.interrupted` for `call-interrupted` with `confirmed_effect: false`, and a
-new call ID (`tool-0001`) with its own validation, start, and terminal result.
-The original call was never replayed and the fixture file remained unchanged.
+Each run directory contains the bounded CLI transcript, exit codes, diff,
+oracle JSON/output, metadata, and copied Session evidence including
+`events.jsonl`.
 
-## Evidence bundles
+## Verification
 
-Each `result.json` contains the oracle checks and the complete event records;
-the nested Session directories contain the original `events.jsonl` files.
-
-- [Trial 1 result and Session evidence](rl02/trial-1/result.json)
-- [Trial 2 result and Session evidence](rl02/trial-2/result.json)
-- [Trial 3 result and Session evidence](rl02/trial-3/result.json)
-
-Result SHA-256 hashes:
-
-```text
-trial-1 9CE75F416784C913665958E394DC69FBC398E66B83D675E0793A264E20569A14
-trial-2 8DEC19DF3B8CC82514DB3D70E8A4DB7400FCF7E385A655D0D8CF4135F99DA973
-trial-3 64F407D1012FE0A12484B0A26DAD6AD133FDE369B16C9BC4E5EDD577F5BD03F0
-```
-
-## Independent regression verification
-
-```text
-uv run --frozen pytest -q
--> 178 passed, 2 skipped
-
-uv run --frozen pytest -q \
-  tests/test_sessions.py::test_failed_stream_persists_failure_without_an_assistant_message \
-  tests/test_ticket12.py::test_cancellation_during_streaming_closes_request_and_turn \
-  tests/test_ticket12.py::test_started_tool_timeout_is_interrupted_and_not_retried \
-  tests/test_ticket13.py::test_resume_shell_includes_command_preview_and_process_evidence \
-  tests/test_ticket13.py::test_retry_interrupted_uses_new_call_id_and_permission_gate \
-  tests/test_ticket14.py::test_cli_acknowledges_cancellation_without_reporting_completion \
-  tests/test_ticket14.py::test_cli_resume_exposes_inspect_exit_and_abandon_choices
--> 7 passed
-```
-
-## Boundary and next question
-
-The evidence supports a reliable host-side invariant under deterministic
-controlled interruption. It does not measure whether a real model notices an
-interrupted operation or chooses an appropriate recovery action. The next
-highest-value test is a three-run `deepseek-v4-flash` recovery prompt against
-an isolated fixture, with the harness forcing interruption after `tool.started`
-and scoring whether the model inspects evidence before requesting a new call.
+- The fixture baseline passed 7 visible `unittest` tests before every trial.
+- The independent RL-02 oracle passed all checks in each valid run.
+- `git diff --check` passed for every valid workspace.
+- Session metadata and event streams were copied from the fresh workspaces.
+- Evidence contains no API key or bearer token; the base URL is recorded
+  without credentials.
