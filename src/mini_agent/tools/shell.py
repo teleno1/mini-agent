@@ -65,6 +65,7 @@ class ShellCommandClass(StrEnum):
     LOCAL_READ = "recognized-local-read"
     LOCAL_BUILD = "recognized-local-build"
     LOCAL_TEST = "recognized-local-test"
+    DECLARED_DEPENDENCY = "recognized-declared-dependency"
     CHAINING = "chaining"
     REDIRECTION = "redirection"
     INTERPRETER = "interpreter"
@@ -463,6 +464,14 @@ def classify_shell_command(
             "interpreter",
             f"{executable} can execute model-selected program text",
         )
+    if _is_declared_dependency_sync(executable, arguments):
+        return _classification(
+            ShellCommandClass.DECLARED_DEPENDENCY,
+            ("recognized-local", "declared-dependency"),
+            "declared-dependency-sync",
+            "a lockfile-verified declared dependency sync is allowed in Full-Auto",
+            recognized=True,
+        )
     if _looks_like_network(executable, arguments):
         return _classification(
             ShellCommandClass.NETWORK,
@@ -803,6 +812,18 @@ def _recognized_local_category(
     if executable == "ruff" and arguments[:1] in {("check",), ("format",)}:
         return ShellCommandClass.LOCAL_TEST
     return None
+
+
+def _is_declared_dependency_sync(executable: str, arguments: tuple[str, ...]) -> bool:
+    """Match the one dependency retrieval form that Full-Auto may run.
+
+    ``uv sync --locked`` resolves from the repository's existing lockfile; it
+    cannot update that lockfile.  Keeping this as an exact parsed form avoids
+    treating package additions, arbitrary package-manager scripts, or general
+    installer commands as declared dependency retrieval.
+    """
+
+    return executable == "uv" and arguments == ("sync", "--locked")
 
 
 _GIT_READ_COMMANDS = frozenset(

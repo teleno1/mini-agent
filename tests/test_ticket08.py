@@ -92,6 +92,15 @@ def test_shell_classifier_is_exact_and_explainable() -> None:
         "git status": (ShellCommandClass.LOCAL_READ, "recognized-local"),
         "pytest -q": (ShellCommandClass.LOCAL_TEST, "recognized-local"),
         "make build": (ShellCommandClass.LOCAL_BUILD, "recognized-local"),
+        "uv sync --locked": (
+            ShellCommandClass.DECLARED_DEPENDENCY,
+            "declared-dependency",
+        ),
+        "uv sync": (ShellCommandClass.UNKNOWN_EXECUTABLE, "unknown-executable"),
+        "uv sync --locked --upgrade": (
+            ShellCommandClass.UNKNOWN_EXECUTABLE,
+            "unknown-executable",
+        ),
         "cat 'literal > text'": (ShellCommandClass.LOCAL_READ, "recognized-local"),
         "cat a.txt && cat b.txt": (ShellCommandClass.CHAINING, "chaining"),
         "cat a.txt > output.txt": (ShellCommandClass.REDIRECTION, "redirection"),
@@ -164,6 +173,19 @@ def test_permission_modes_limit_full_auto_to_recognized_local_shell() -> None:
     assert full_auto.decide(safe_request) is PermissionDecision.ALLOW
     assert full_auto.last_metadata.matched_rule == "full-auto-recognized-local"
     assert full_auto.decide(unsafe_request) is PermissionDecision.DENY
+    dependency_input = ShellInput(command="uv sync --locked")
+    dependency_request = PermissionRequest(
+        NormalizedToolCall.from_call(
+            ToolCall(
+                tool_call_id="declared-dependency",
+                name="shell",
+                arguments=dependency_input.model_dump(),
+            )
+        ),
+        tool.assess(dependency_input),
+    )
+    assert full_auto.decide(dependency_request) is PermissionDecision.ALLOW
+    assert full_auto.last_metadata.matched_rule == "full-auto-recognized-local"
     for command in ('cat "$HOME/test.py"', "find . -delete", "cat .env"):
         risky = ShellInput(command=command)
         risky_request = PermissionRequest(
