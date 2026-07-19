@@ -13,7 +13,7 @@ This report resolves the execution question in [Issue #30](https://github.com/te
 - Plan Mode: disabled
 - Platform: Windows (`win32`), CPython 3.12
 - Each run used a fresh workspace, fresh Session, unchanged task prompt, and the independent oracle outside the workspace.
-- PC-01 exact historical fixture commit reconstructed from retained prior Session evidence: `e7f89df5f10491efb3101aab003141171123ae7a`.
+- The original PC-01 fixture Git object was not present in the current checkout. Its public files were recovered exactly from retained prior Session evidence and committed as disposable fixture baseline `e7f89df5f10491efb3101aab003141171123ae7a`; this provenance caveat is retained rather than silently presenting a different hash as the historical fixture.
 - RL-01/RL-02 fixture commit: `6f749dcc7298f3316af9f4a1730ad197e1b9946c`.
 
 ## Strict aggregation
@@ -33,4 +33,3 @@ No tests, documentation, packaging, lockfiles, credentials, external paths, or u
 ## Raw evidence
 
 Raw Session JSONL and oracle outputs are retained locally under `.scratch/trial30/pc01-exact/`, `.scratch/trial30/rl01/`, and `.scratch/trial30/rl02/`. Each run contains one `.mini-agent/sessions/<session-id>/events.jsonl` and one `oracle.json`.
-
