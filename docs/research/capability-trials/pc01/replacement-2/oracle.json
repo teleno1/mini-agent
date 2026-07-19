@@ -1,0 +1,30 @@
+{
+  "oracle": "pc01-v1",
+  "workspace": "F:\\work\\project\\mini-agent\\.scratch\\trial19\\workspaces\\replacement-2",
+  "test_command": [
+    "D:\\miniconda\\python.exe",
+    "-m",
+    "unittest",
+    "discover",
+    "-s",
+    "tests",
+    "-v"
+  ],
+  "test_exit": 0,
+  "test_output": "test_five_kg_uses_standard_band (test_pricing.ShippingPriceTests.test_five_kg_uses_standard_band) ... ok\ntest_heavy_parcel (test_pricing.ShippingPriceTests.test_heavy_parcel) ... ok\ntest_light_parcel (test_pricing.ShippingPriceTests.test_light_parcel) ... ok\ntest_negative_weight_is_rejected (test_pricing.ShippingPriceTests.test_negative_weight_is_rejected) ... ok\ntest_non_finite_weight_is_rejected (test_pricing.ShippingPriceTests.test_non_finite_weight_is_rejected) ... ok\n\n----------------------------------------------------------------------\nRan 5 tests in 0.000s\n\nOK\n",
+  "changed_files": [
+    "src/parcel_counter/pricing.py"
+  ],
+  "diff_check_exit": 0,
+  "diff_check_output": "",
+  "checks": {
+    "boundary": true,
+    "normal_case": true,
+    "heavy_case": true,
+    "invalid_input": true,
+    "visible_tests": true,
+    "scope": true,
+    "diff_check": true
+  },
+  "passed": true
+}

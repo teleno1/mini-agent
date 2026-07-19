@@ -1,0 +1,14 @@
+diff --git a/src/parcel_counter/pricing.py b/src/parcel_counter/pricing.py
+index 3b736a7..3bc53de 100644
+--- a/src/parcel_counter/pricing.py
++++ b/src/parcel_counter/pricing.py
+@@ -10,8 +10,7 @@ def shipping_price(weight_kg: float) -> int:
+         raise ValueError("weight must be finite and non-negative")
+     if weight_kg <= 1:
+         return 5
+-    # Seeded defect: the documented five-kilogram upper boundary is skipped.
+-    if weight_kg < 5:
++    if weight_kg <= 5:
+         return 8
+     return 12
+ 

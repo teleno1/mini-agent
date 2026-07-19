@@ -1,0 +1,18 @@
+test_five_kg_uses_standard_band (test_pricing.ShippingPriceTests.test_five_kg_uses_standard_band) ... FAIL
+test_heavy_parcel (test_pricing.ShippingPriceTests.test_heavy_parcel) ... ok
+test_light_parcel (test_pricing.ShippingPriceTests.test_light_parcel) ... ok
+test_negative_weight_is_rejected (test_pricing.ShippingPriceTests.test_negative_weight_is_rejected) ... ok
+test_non_finite_weight_is_rejected (test_pricing.ShippingPriceTests.test_non_finite_weight_is_rejected) ... ok
+
+======================================================================
+FAIL: test_five_kg_uses_standard_band (test_pricing.ShippingPriceTests.test_five_kg_uses_standard_band)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "F:\work\project\mini-agent\.scratch\trial19\workspaces\replacement-1\tests\test_pricing.py", line 16, in test_five_kg_uses_standard_band
+    self.assertEqual(shipping_price(5), 8)
+AssertionError: 12 != 8
+
+----------------------------------------------------------------------
+Ran 5 tests in 0.002s
+
+FAILED (failures=1)
